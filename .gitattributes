@@ -1,0 +1,5 @@
+# Python/YAML/Ruby use spaces; retain the vendored snapshot's upstream layout.
+*.py whitespace=-indent-with-non-tab
+*.yml whitespace=-indent-with-non-tab
+*.rb whitespace=-indent-with-non-tab
+vendor/lsp-framework/** -whitespace

@@ -71,6 +71,7 @@ jobs:
           path: native
       - name: Merge, sign, validate and archive
         run: |
+          python3 .github/scripts/test_package_release.py
           mkdir -p native/arm64 native/x86_64 dist
           tar -xzf native/TextMate-arm64.tar.gz -C native/arm64
           tar -xzf native/TextMate-x86_64.tar.gz -C native/x86_64

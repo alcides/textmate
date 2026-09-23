@@ -17,6 +17,7 @@ add FLAGS "-I${dep_prefix}/include -I${brew_prefix}/include"
 add LN_FLAGS "-L${dep_prefix}/lib"
 add IB_FLAGS "--minimum-deployment-target=14.0"
 EOF
+mkdir -p build-release
 builddir="$PWD/build-release" ./configure
 ninja -j3 TextMate
 app=build-release/release/Applications/TextMate/TextMate.app
