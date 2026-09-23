@@ -9,6 +9,8 @@ extern NSUInteger const OakChoiceMenuKeyMovement;
 @property (nonatomic) NSUInteger choiceIndex;
 @property (nonatomic, readonly) NSString* selectedChoice;
 @property (nonatomic) NSFont* font;
+// Optional mouse acceptance; snippet choices retain their keyboard-only behavior.
+@property (nonatomic, copy) void (^choiceAccepted)(NSUInteger index);
 - (void)showAtTopLeftPoint:(NSPoint)aPoint forView:(NSView*)aView;
 - (BOOL)isVisible;
 - (NSUInteger)didHandleKeyEvent:(NSEvent*)anEvent;

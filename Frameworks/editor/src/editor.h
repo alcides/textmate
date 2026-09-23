@@ -172,6 +172,8 @@ namespace ng
 		void perform (action_t action, layout_movement_t const* layout = NULL, indent_correction_t indentCorrections = kIndentCorrectAlways, std::string const& scopeAttributes = NULL_STR);
 
 		bool disallow_tab_expansion () const;
+		bool has_active_completion () const;
+		void set_external_completions (std::vector<std::string> const& suffixes);
 
 		void insert (std::string const& str, bool selectInsertion = false);
 		void insert_with_pairing (std::string const& str, indent_correction_t indentCorrections, bool autoPairing, std::string const& scopeAttributes = NULL_STR);

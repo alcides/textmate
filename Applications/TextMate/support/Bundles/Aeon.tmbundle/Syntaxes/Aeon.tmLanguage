@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>name</key><string>Aeon</string>
+<key>uuid</key><string>DE924C99-967E-4820-B5AD-F2C648C1C572</string>
+<key>scopeName</key><string>source.aeon</string>
+<key>fileTypes</key><array><string>ae</string></array>
+<key>patterns</key><array>
+<dict><key>name</key><string>comment.line.number-sign.aeon</string><key>match</key><string>#.*$</string></dict>
+<dict><key>name</key><string>string.quoted.double.aeon</string><key>begin</key><string>"</string><key>end</key><string>"</string><key>patterns</key><array><dict><key>name</key><string>constant.character.escape.aeon</string><key>match</key><string>\\.</string></dict></array></dict>
+</array>
+</dict></plist>

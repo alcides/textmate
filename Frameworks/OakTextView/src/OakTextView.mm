@@ -392,6 +392,8 @@ struct document_view_t : ng::buffer_api_t
 	void set_delegate (ng::editor_delegate_t* delegate) { _editor->set_delegate(delegate); }
 	void perform (ng::action_t action, ng::indent_correction_t indentCorrections = ng::kIndentCorrectAlways, std::string const& scopeAttributes = NULL_STR) { _editor->perform(action, _layout, indentCorrections, scopeAttributes); }
 	bool disallow_tab_expansion () const { return _editor->disallow_tab_expansion(); }
+	bool has_active_completion () const { return _editor->has_active_completion(); }
+	void set_external_completions (std::vector<std::string> const& values) { _editor->set_external_completions(values); }
 	void insert (std::string const& str, bool selectInsertion = false) { _editor->insert(str, selectInsertion); }
 	void insert_with_pairing (std::string const& str, ng::indent_correction_t indentCorrections, bool autoPairing, std::string const& scopeAttributes = NULL_STR) { _editor->insert_with_pairing(str, indentCorrections, autoPairing, scopeAttributes); }
 	void move_selection_to (ng::index_t const& index, bool selectInsertion = true) { _editor->move_selection_to(index, selectInsertion); }
@@ -460,10 +462,19 @@ private:
 	ng::layout_t* _layout;
 };
 
+@interface OakHoverBackgroundView : NSView
+@end
+@implementation OakHoverBackgroundView
+- (void)drawRect:(NSRect)rect { [NSColor.windowBackgroundColor setFill]; NSRectFill(rect); }
+@end
+
 @interface OakTextView () <NSTextInputClient, NSDraggingSource, NSIgnoreMisspelledWords, NSChangeSpelling, NSTextFieldDelegate, NSTouchBarDelegate, NSAccessibilityCustomRotorItemSearchDelegate, OakUserDefaultsObserver>
 {
 	std::shared_ptr<document_view_t> documentView;
 	ng::callback_t* callback;
+	NSUInteger completionRequestSerial;
+	id completionMouseMonitor;
+	NSUInteger hoverSerial;
 
 	BOOL hideCaret;
 	NSTimer* blinkCaretTimer;
@@ -530,6 +541,17 @@ private:
 @property (nonatomic) BOOL showDragCursor;
 @property (nonatomic) BOOL showColumnSelectionCursor;
 @property (nonatomic) OakChoiceMenu* choiceMenu;
+@property (nonatomic) OakChoiceMenu* completionMenu;
+@property (nonatomic) NSTrackingArea* hoverTrackingArea;
+@property (nonatomic) NSTimer* hoverTimer;
+@property (nonatomic) NSPanel* hoverPanel;
+@property (nonatomic) id hoverEventMonitor;
+@property (nonatomic) NSArray* hoverObservers;
+- (void)dismissHover;
+@property (nonatomic, copy) NSArray<NSDictionary*>* diagnosticByteRanges;
+@property (nonatomic, copy) void (^completionAcceptance)(NSUInteger index);
+- (void)dismissCompletionPopup;
+- (void)completionContextLost:(NSNotification*)notification;
 @property (nonatomic) LiveSearchView* liveSearchView;
 @property (nonatomic, copy) NSString* liveSearchString;
 @property (nonatomic) ng::ranges_t liveSearchRanges;
@@ -611,6 +633,9 @@ struct refresh_helper_t
 
 				if(_revision != documentView->revision() || _selection != documentView->ranges())
 				{
+					if(_revision != documentView->revision()) _self.lspDiagnostics = nil;
+					[_self dismissCompletionPopup];
+					[_self dismissHover];
 					[_self updateMarkedRanges];
 					[_self updateSelection];
 					[_self updateSymbol];
@@ -844,6 +869,7 @@ static std::string shell_quote (std::vector<std::string> paths)
 
 - (void)setDocument:(OakDocument*)aDocument
 {
+	if(aDocument != _document) self.lspDiagnostics = nil;
 	if(aDocument && [_document isEqual:aDocument])
 	{
 		if(_document.selection)
@@ -967,6 +993,8 @@ static std::string shell_quote (std::vector<std::string> paths)
 {
 	if(self = [super initWithFrame:aRect])
 	{
+		// Modern AppKit defaults to unclipped drawing; do not paint over the gutter.
+		self.clipsToBounds = YES;
 		settings_t const& settings = settings_for_path();
 
 		_showInvisibles = settings.get(kSettingsShowInvisiblesKey, false);
@@ -1011,6 +1039,8 @@ static std::string shell_quote (std::vector<std::string> paths)
 
 - (void)dealloc
 {
+	[self dismissHover];
+	[self dismissCompletionPopup];
 	[NSNotificationCenter.defaultCenter removeObserver:self];
 	[self unbind:@"scmStatus"];
 	[self setDocument:nil];
@@ -1167,6 +1197,7 @@ doScroll:
 }
 
 - (BOOL)acceptsFirstResponder       { return YES; }
+- (BOOL)resignFirstResponder { [self dismissHover]; [self dismissCompletionPopup]; return [super resignFirstResponder]; }
 - (BOOL)isFlipped                   { return YES; }
 - (BOOL)isOpaque                    { return YES; }
 
@@ -1177,8 +1208,168 @@ doScroll:
 	_links.reset();
 }
 
+- (void)setLspDiagnostics:(NSArray<NSDictionary*>*)diagnostics
+{
+	_lspDiagnostics = [diagnostics copy];
+	NSMutableArray* ranges = [NSMutableArray array];
+	NSString* content = self.document.content ?: @"";
+	NSArray<NSString*>* lines = [content componentsSeparatedByString:@"\n"];
+	NSMutableArray<NSNumber*>* starts = [NSMutableArray array];
+	NSUInteger offset = 0;
+	for(NSString* line in lines) { [starts addObject:@(offset)]; offset += [line lengthOfBytesUsingEncoding:NSUTF8StringEncoding] + 1; }
+	for(NSDictionary* diagnostic in diagnostics) {
+		NSInteger severity = [diagnostic[@"severity"] integerValue];
+		if(severity != 1 && severity != 2) continue;
+		auto index = [&](NSString* lineKey, NSString* columnKey) -> NSUInteger {
+			NSInteger line = [diagnostic[lineKey] integerValue], column = [diagnostic[columnKey] integerValue];
+			if(!diagnostic[lineKey] || !diagnostic[columnKey] || line < 0 || line >= lines.count || column < 0) return NSNotFound;
+			NSString* text = lines[line];
+			if(column > text.length) return NSNotFound;
+			if(column > 0 && column < text.length && CFStringIsSurrogateHighCharacter([text characterAtIndex:column-1]) && CFStringIsSurrogateLowCharacter([text characterAtIndex:column])) return NSNotFound;
+			return starts[line].unsignedIntegerValue + [[text substringToIndex:column] lengthOfBytesUsingEncoding:NSUTF8StringEncoding];
+		};
+		NSUInteger from = index(@"line", @"column"), to = index(@"endLine", @"endColumn");
+		if(from == NSNotFound || to == NSNotFound || from > to) continue;
+		[ranges addObject:@{@"from":@(from), @"to":@(to), @"severity":@(severity)}];
+	}
+	self.diagnosticByteRanges = ranges;
+	[self setNeedsDisplay:YES];
+}
+
+- (void)dismissHover
+{
+	++hoverSerial;
+	[self.hoverTimer invalidate]; self.hoverTimer = nil;
+	[self.hoverPanel.parentWindow removeChildWindow:self.hoverPanel];
+	[self.hoverPanel orderOut:nil]; self.hoverPanel = nil;
+	if(self.hoverEventMonitor) [NSEvent removeMonitor:self.hoverEventMonitor];
+	self.hoverEventMonitor = nil;
+	for(id observer in self.hoverObservers) [NSNotificationCenter.defaultCenter removeObserver:observer];
+	self.hoverObservers = nil;
+}
+
+- (void)setHoverProvider:(void (^)(NSUInteger, NSUInteger, void (^)(NSString*)))provider
+{
+	[self dismissHover];
+	_hoverProvider = [provider copy];
+}
+
+- (void)updateTrackingAreas
+{
+	[super updateTrackingAreas];
+	if(self.hoverTrackingArea) [self removeTrackingArea:self.hoverTrackingArea];
+	self.hoverTrackingArea = [[NSTrackingArea alloc] initWithRect:NSZeroRect options:NSTrackingMouseMoved | NSTrackingMouseEnteredAndExited | NSTrackingActiveInKeyWindow | NSTrackingInVisibleRect owner:self userInfo:nil];
+	[self addTrackingArea:self.hoverTrackingArea];
+}
+
+- (void)viewWillMoveToWindow:(NSWindow*)window
+{
+	[self dismissHover];
+	[super viewWillMoveToWindow:window];
+}
+
+- (void)mouseExited:(NSEvent*)event { [self dismissHover]; }
+- (void)mouseMoved:(NSEvent*)event { [self scheduleHoverAtPoint:[self convertPoint:event.locationInWindow fromView:nil]]; }
+
+- (void)scheduleHoverAtPoint:(NSPoint)point
+{
+	[self dismissHover];
+	if(!self.hoverProvider || !documentView || !self.window.isKeyWindow || self.completionMenu || self.choiceMenu || [self hasMarkedText]) return;
+	auto index = documentView->index_at_point(point);
+	if(index.index >= documentView->size()) return;
+	CGRect glyph = documentView->rect_at_index(index);
+	// Hit testing can clamp to a line end: do not request hover in blank space.
+	if(fabs(point.x - glyph.origin.x) > MAX(12, self.font.pointSize) || point.y < CGRectGetMinY(glyph) || point.y > CGRectGetMaxY(glyph)) return;
+	std::string before = documentView->substr(0, index.index);
+	NSUInteger line = std::count(before.begin(), before.end(), '\n');
+	size_t start = before.find_last_of('\n'); start = start == std::string::npos ? 0 : start+1;
+	NSUInteger character = utf16::distance(before.data()+start, before.data()+before.size());
+	auto snapshot = documentView;
+	auto revision = snapshot->revision();
+	NSUInteger serial = hoverSerial;
+	auto provider = self.hoverProvider;
+	__weak OakTextView* weakSelf = self;
+	self.hoverEventMonitor = [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskScrollWheel | NSEventMaskLeftMouseDown | NSEventMaskRightMouseDown | NSEventMaskOtherMouseDown | NSEventMaskKeyDown handler:^NSEvent*(NSEvent* event) { [weakSelf dismissHover]; return event; }];
+	NSMutableArray* observers = [NSMutableArray array];
+	for(NSString* name in @[NSWindowDidResignKeyNotification, NSWindowWillCloseNotification, NSApplicationDidResignActiveNotification, NSViewBoundsDidChangeNotification])
+		[observers addObject:[NSNotificationCenter.defaultCenter addObserverForName:name object:([name isEqual:NSViewBoundsDidChangeNotification] ? self.enclosingScrollView.contentView : [name isEqual:NSApplicationDidResignActiveNotification] ? nil : self.window) queue:nil usingBlock:^(NSNotification* notification) { [weakSelf dismissHover]; }]];
+	self.hoverObservers = observers;
+	self.hoverTimer = [NSTimer scheduledTimerWithTimeInterval:0.55 repeats:NO block:^(NSTimer* timer) {
+		OakTextView* view = weakSelf;
+		if(!view || view->hoverSerial != serial) return;
+		provider(line, character, ^(NSString* text) {
+			OakTextView* current = weakSelf;
+			if(!current || current->hoverSerial != serial || current->documentView != snapshot || snapshot->revision() != revision || current.hoverProvider != provider || !current.window.isKeyWindow || current.completionMenu || !text.length) return;
+			// Plain text only: server content cannot load remote resources or HTML.
+			if(text.length > 2000) text = [[text substringToIndex:[text rangeOfComposedCharacterSequencesForRange:NSMakeRange(0, 2000)].length] stringByAppendingString:@"…"];
+			NSTextField* label = [NSTextField wrappingLabelWithString:text];
+			label.font = [NSFont systemFontOfSize:12]; label.textColor = NSColor.labelColor;
+			label.maximumNumberOfLines = 20; label.lineBreakMode = NSLineBreakByTruncatingTail;
+			label.accessibilityLabel = @"Language server hover information";
+			CGFloat width = MIN(480, current.window.screen.visibleFrame.size.width-32);
+			NSSize size = [label.cell cellSizeForBounds:NSMakeRect(0, 0, width-20, 1000)];
+			CGFloat height = MIN(340, MAX(36, size.height+20));
+			NSPanel* panel = [[NSPanel alloc] initWithContentRect:NSMakeRect(0,0,width,height) styleMask:NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel backing:NSBackingStoreBuffered defer:NO];
+			panel.releasedWhenClosed = NO; panel.hasShadow = YES; panel.ignoresMouseEvents = YES;
+			panel.backgroundColor = NSColor.windowBackgroundColor;
+			panel.contentView = [[OakHoverBackgroundView alloc] initWithFrame:NSMakeRect(0,0,width,height)];
+			label.frame = NSMakeRect(10,10,width-20,height-20); [panel.contentView addSubview:label];
+			NSRect anchor = [current.window convertRectToScreen:[current convertRect:glyph toView:nil]];
+			NSRect screen = current.window.screen.visibleFrame;
+			NSPoint origin = NSMakePoint(MIN(MAX(NSMinX(anchor),NSMinX(screen)),NSMaxX(screen)-width), NSMinY(anchor)-height-5);
+			if(origin.y < NSMinY(screen)) origin.y = NSMaxY(anchor)+5;
+			origin.y = MIN(MAX(origin.y, NSMinY(screen)), NSMaxY(screen)-height);
+			[panel setFrameOrigin:origin]; current.hoverPanel = panel;
+			[current.window addChildWindow:panel ordered:NSWindowAbove]; [panel orderFront:nil];
+		});
+	}];
+}
+
+- (void)drawDiagnosticUnderlinesInRect:(NSRect)dirtyRect
+{
+	if(!self.diagnosticByteRanges.count) return;
+	[NSGraphicsContext saveGraphicsState];
+	NSRectClip(NSIntersectionRect(dirtyRect, self.bounds));
+	CGContextSetShouldAntialias(NSGraphicsContext.currentContext.CGContext, true);
+	// Use glyph/caret geometry instead of selection rectangles: selections extend
+	// through blank space on multiline ranges. This also follows soft wrapping.
+	size_t visibleFrom = documentView->index_at_point(CGPointMake(0, NSMinY(dirtyRect))).index;
+	size_t visibleTo = documentView->index_at_point(CGPointMake(NSWidth(self.bounds), NSMaxY(dirtyRect))).index;
+	for(NSDictionary* range in self.diagnosticByteRanges) {
+		size_t from = [range[@"from"] unsignedIntegerValue], to = [range[@"to"] unsignedIntegerValue];
+		if(to < visibleFrom || from > visibleTo) continue;
+		[([range[@"severity"] integerValue] == 1 ? NSColor.systemRedColor : NSColor.systemOrangeColor) setStroke];
+		auto stroke = [&](CGRect rect) {
+			if(!CGRectIntersectsRect(rect, dirtyRect)) return;
+			CGFloat y = CGRectGetMaxY(rect) - 2;
+			NSBezierPath* path = [NSBezierPath bezierPath]; path.lineWidth = 1;
+			[path moveToPoint:NSMakePoint(CGRectGetMinX(rect), y)];
+			for(CGFloat x = CGRectGetMinX(rect)+2; x <= CGRectGetMaxX(rect); x += 2)
+				[path lineToPoint:NSMakePoint(x, y + (((int)((x-CGRectGetMinX(rect))/2) % 2) ? -1.5 : 0))];
+			[path stroke];
+		};
+		if(from == to) { CGRect rect = documentView->rect_at_index(from); rect.size.width = 6; stroke(rect); continue; }
+		CGRect run = CGRectZero;
+		for(size_t i = std::max(from, visibleFrom); i < std::min(to, visibleTo); ) {
+			size_t next = i+1;
+			while(next < to && (documentView->substr(next, next+1)[0] & 0xC0) == 0x80) ++next;
+			CGRect a = documentView->rect_at_index(i), b = documentView->rect_at_index(next, true);
+			if(a.origin.y == b.origin.y && b.origin.x > a.origin.x) {
+				a.size.width = b.origin.x - a.origin.x;
+				if(!CGRectIsEmpty(run) && run.origin.y == a.origin.y && fabs(CGRectGetMaxX(run)-a.origin.x) < 0.5) run = CGRectUnion(run, a);
+				else { if(!CGRectIsEmpty(run)) stroke(run); run = a; }
+			}
+			i = next;
+		}
+		if(!CGRectIsEmpty(run)) stroke(run);
+	}
+	[NSGraphicsContext restoreGraphicsState];
+}
+
 - (void)drawRect:(NSRect)aRect
 {
+	aRect = NSIntersectionRect(aRect, self.bounds);
+	if(NSIsEmptyRect(aRect)) return;
 	if(!documentView || !self.theme)
 	{
 		NSEraseRect(aRect);
@@ -1218,6 +1409,7 @@ doScroll:
 	};
 
 	documentView->draw(ng::context_t(context, _showInvisibles ? documentView->invisibles_map : NULL_STR, [spellingDotImage CGImageForProposedRect:NULL context:[NSGraphicsContext currentContext] hints:nil], foldingDotsFactory), aRect, [self isFlipped], merge(documentView->ranges(), [self markedRanges]), _liveSearchRanges);
+	[self drawDiagnosticUnderlinesInRect:aRect];
 }
 
 // =====================
@@ -2209,7 +2401,19 @@ static void update_menu_key_equivalents (NSMenu* menu, std::multimap<std::string
 
 - (void)realKeyDown:(NSEvent*)anEvent
 {
+	[self dismissHover];
 	AUTO_REFRESH;
+	if(_completionMenu) {
+		NSUInteger event = [_completionMenu didHandleKeyEvent:anEvent];
+		if(event == OakChoiceMenuKeyMovement) return;
+		if(event == OakChoiceMenuKeyReturn || event == OakChoiceMenuKeyTab) {
+			auto accept = self.completionAcceptance;
+			if(accept) accept(_completionMenu.choiceIndex);
+			return;
+		}
+		[self dismissCompletionPopup];
+		if(event == OakChoiceMenuKeyCancel) return;
+	}
 	if(!_choiceMenu)
 		return [self oldKeyDown:anEvent];
 
@@ -4134,6 +4338,7 @@ static scope::context_t add_modifiers_to_scope (scope::context_t scope, NSUInteg
 
 - (void)mouseDown:(NSEvent*)anEvent
 {
+	[self dismissHover];
 	if([self.inputContext handleEvent:anEvent] || !documentView || [anEvent type] != NSEventTypeLeftMouseDown || ignoreMouseDown)
 		return (void)(ignoreMouseDown = NO);
 
@@ -4460,8 +4665,86 @@ static scope::context_t add_modifiers_to_scope (scope::context_t scope, NSUInteg
 // ==============
 // = Completion =
 // ==============
-- ACTION(complete);
-- ACTION(nextCompletion);
+- (void)dismissCompletionPopup {
+	++completionRequestSerial;
+	self.completionAcceptance = nil;
+	_completionMenu.choiceAccepted = nil;
+	[_completionMenu close]; self.completionMenu = nil;
+	if(completionMouseMonitor) { [NSEvent removeMonitor:completionMouseMonitor]; completionMouseMonitor = nil; }
+	[NSNotificationCenter.defaultCenter removeObserver:self name:NSWindowDidResignKeyNotification object:nil];
+	[NSNotificationCenter.defaultCenter removeObserver:self name:NSWindowWillCloseNotification object:nil];
+	[NSNotificationCenter.defaultCenter removeObserver:self name:NSApplicationDidResignActiveNotification object:nil];
+}
+- (void)completionContextLost:(NSNotification*)notification { [self dismissCompletionPopup]; }
+- (void)setCompletionProvider:(void (^)(NSUInteger, NSUInteger, NSString*, void (^)(NSArray<NSString*>*)))provider {
+	[self dismissCompletionPopup];
+	_completionProvider = [provider copy];
+}
+- (void)complete:(id)sender {
+	[self dismissHover];
+	[self dismissCompletionPopup];
+	NSUInteger serial = ++completionRequestSerial;
+	if(!self.completionProvider || _choiceMenu || documentView->ranges().size() != 1 || !documentView->ranges().last().empty() || documentView->ranges().last().columnar || [self hasMarkedText]) {
+		[self handleAction:ng::kComplete forSelector:@selector(complete:)]; return;
+	}
+	auto range = documentView->ranges().last();
+	size_t caret = range.last.index;
+	auto word = ng::word_at(*documentView, range);
+	if(word.max().index > caret) { [self handleAction:ng::kComplete forSelector:@selector(complete:)]; return; }
+	size_t line = documentView->convert(caret).line;
+	NSString* prefix = word.max().index == caret ? to_ns(documentView->substr(word.min().index, caret)) : @"";
+	NSMutableCharacterSet* identifier = [NSCharacterSet.alphanumericCharacterSet mutableCopy];
+	[identifier addCharactersInString:@"_"];
+	if([prefix rangeOfCharacterFromSet:identifier.invertedSet].location != NSNotFound) prefix = @"";
+	NSUInteger column = [to_ns(documentView->substr(documentView->begin(line), caret)) length];
+	auto snapshot = documentView;
+	auto revision = documentView->revision();
+	auto selection = documentView->ranges();
+	auto provider = self.completionProvider;
+	__weak OakTextView* weakSelf = self;
+	provider(line, column, prefix, ^(NSArray<NSString*>* suffixes) {
+		OakTextView* view = weakSelf;
+		if(!view || view->completionRequestSerial != serial || view->documentView != snapshot || snapshot->revision() != revision || snapshot->ranges() != selection || view.completionProvider != provider || view.window.firstResponder != view) return;
+		if(suffixes.count) {
+			OakChoiceMenu* menu = [OakChoiceMenu new];
+			menu.font = [NSFont systemFontOfSize:NSFont.systemFontSize];
+			NSMutableArray* labels = [NSMutableArray new];
+			for(NSString* suffix in suffixes) [labels addObject:[prefix stringByAppendingString:suffix]];
+			menu.choices = labels; menu.choiceIndex = 0;
+			view.completionMenu = menu;
+			view.completionAcceptance = ^(NSUInteger index) {
+				OakTextView* current = weakSelf;
+				if(!current) return;
+				BOOL valid = current->completionRequestSerial == serial && current->documentView == snapshot && snapshot->revision() == revision && snapshot->ranges() == selection && current.completionProvider == provider && current.window.firstResponder == current && index < suffixes.count;
+				[current dismissCompletionPopup];
+				if(!valid) return;
+				snapshot->set_external_completions({to_s(suffixes[index])});
+				[current handleAction:ng::kComplete forSelector:@selector(complete:)];
+			};
+			menu.choiceAccepted = ^(NSUInteger index) { auto accept = weakSelf.completionAcceptance; if(accept) accept(index); };
+			view->completionMouseMonitor = [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskLeftMouseDown | NSEventMaskRightMouseDown | NSEventMaskOtherMouseDown handler:^NSEvent*(NSEvent* event) {
+				OakTextView* current = weakSelf;
+				if(current && event.window != current.completionMenu.window) [current dismissCompletionPopup];
+				return event;
+			}];
+			[NSNotificationCenter.defaultCenter addObserver:view selector:@selector(completionContextLost:) name:NSWindowDidResignKeyNotification object:view.window];
+			[NSNotificationCenter.defaultCenter addObserver:view selector:@selector(completionContextLost:) name:NSWindowWillCloseNotification object:view.window];
+			[NSNotificationCenter.defaultCenter addObserver:view selector:@selector(completionContextLost:) name:NSApplicationDidResignActiveNotification object:nil];
+			[menu showAtTopLeftPoint:[view positionForWindowUnderCaret] forView:view];
+			return;
+		}
+		[view handleAction:ng::kComplete forSelector:@selector(complete:)];
+	});
+}
+- (NSDictionary*)lspSymbolPosition
+{
+	if(!documentView || documentView->ranges().size() != 1 || documentView->ranges().last().columnar || [self hasMarkedText]) return nil;
+	auto range = documentView->ranges().last();
+	size_t caret = range.min().index, line = documentView->convert(caret).line;
+	auto word = ng::word_at(*documentView, ng::range_t(caret));
+	return @{@"line":@(line), @"character":@([to_ns(documentView->substr(documentView->begin(line),caret)) length]), @"word":to_ns(documentView->substr(word.min().index, word.max().index))};
+}
+- (void)nextCompletion:(id)sender { [self complete:sender]; }
 - ACTION(previousCompletion);
 
 // =============

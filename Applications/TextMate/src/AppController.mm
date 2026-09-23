@@ -4,6 +4,7 @@
 #import "AboutWindowController.h"
 #import "TMPlugInController.h"
 #import "RMateServer.h"
+extern void RunLSPPrototypeTest(NSString* path);
 #import <BundleEditor/BundleEditor.h>
 #import <BundlesManager/BundlesManager.h>
 #import <CrashReporter/CrashReporter.h>
@@ -302,6 +303,7 @@ BOOL HasDocumentWindow (NSArray* windows)
 			.submenu = {
 				{ @"Jump to Line…",              @selector(orderFrontGoToLinePanel:),      @"l" },
 				{ @"Jump to Symbol…",            @selector(showSymbolChooser:),            @"T" },
+				{ @"Go to Definition",          @selector(goToDefinition:), .modifierFlags = 0, .key = NSF12FunctionKey },
 				{ @"Jump to Selection",          @selector(centerSelectionInVisibleArea:), @"j" },
 				{ /* -------- */ },
 				{ @"Set Bookmark",               @selector(toggleCurrentBookmark:),                                                   .key = NSF2FunctionKey },
@@ -349,6 +351,8 @@ BOOL HasDocumentWindow (NSArray* windows)
 				{ @"Shift Left",                           @selector(shiftLeft:),                  @"[" },
 				{ @"Shift Right",                          @selector(shiftRight:),                 @"]" },
 				{ @"Indent Line / Selection",              @selector(indent:)                           },
+				{ @"Rename Symbol…",                       @selector(renameSymbol:), @"R", .modifierFlags = NSEventModifierFlagOption|NSEventModifierFlagShift|NSEventModifierFlagCommand },
+				{ @"Format Document",                      @selector(formatDocument:), .modifierFlags = NSEventModifierFlagOption|NSEventModifierFlagShift, .key = 'F' },
 				{ /* -------- */ },
 				{ @"Reformat Text",                        @selector(reformatText:)                     },
 				{ @"Reformat Text and Justify",            @selector(reformatTextAndJustify:)           },
@@ -586,6 +590,11 @@ BOOL HasDocumentWindow (NSArray* windows)
 - (void)applicationDidFinishLaunching:(NSNotification*)aNotification
 {
 	NSWindow.allowsAutomaticWindowTabbing = NO;
+	if(NSString* testPath = [NSUserDefaults.standardUserDefaults stringForKey:@"LSPPrototypeTestPath"]) {
+		self.didFinishLaunching = YES;
+		RunLSPPrototypeTest(testPath);
+		return;
+	}
 
 	if([NSApp respondsToSelector:@selector(setAutomaticCustomizeTouchBarMenuItemEnabled)]) // MAC_OS_X_VERSION_10_12_1
 		NSApp.automaticCustomizeTouchBarMenuItemEnabled = YES;

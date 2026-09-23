@@ -1,0 +1,4 @@
+target "lsp-framework" {
+	add FLAGS "-I${dir}/vendor -I${dir}/generated"
+	sources vendor/lsp/*.cpp vendor/lsp/{io,json,jsonrpc}/*.cpp generated/lsp/*.cpp
+}

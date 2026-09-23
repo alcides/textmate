@@ -1,0 +1,5 @@
+def inc (n:Int) : Int := n + 1;
+def main (u:Int) : Int :=
+    let x := 41 in
+    let y := inc x in
+    ?a;

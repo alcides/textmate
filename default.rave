@@ -1,4 +1,6 @@
-set APP_MIN_OS    "10.12"
+# Experimental LSP build: floating-point to_chars needs 13.3; the validated
+# Homebrew capnp/kj binaries require 14.0. This is a deployment target only.
+set APP_MIN_OS    "14.0"
 set CS_IDENTITY   "-"
 
 set C_FLAGS       "-std=c99"

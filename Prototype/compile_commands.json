@@ -1,0 +1,7 @@
+[
+  {
+    "directory": "/Users/alcides/Code/TextmateLSP/Prototype",
+    "file": "symbols.cpp",
+    "arguments": ["clang++", "-std=c++17", "-c", "symbols.cpp"]
+  }
+]

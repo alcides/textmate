@@ -30,6 +30,12 @@ enum OTVFontSmoothing : NSUInteger
 
 @interface OakTextView : OakView <NSAccessibilityNavigableStaticText, NSStandardKeyBindingResponding>
 @property (nonatomic) OakDocument* document;
+- (NSDictionary*)lspSymbolPosition;
+// Current-snapshot LSP ranges in zero-based UTF-16 line/column coordinates.
+@property (nonatomic, copy) NSArray<NSDictionary*>* lspDiagnostics;
+@property (nonatomic, copy) void (^hoverProvider)(NSUInteger line, NSUInteger character, void (^reply)(NSString*));
+// Asynchronous provider of insertion suffixes; nil preserves native completion.
+@property (nonatomic, copy) void (^completionProvider)(NSUInteger line, NSUInteger character, NSString* prefix, void (^reply)(NSArray<NSString*>*));
 @property (nonatomic) NSString* themeUUID;
 
 @property (nonatomic, weak) id <OakTextViewDelegate>        delegate;

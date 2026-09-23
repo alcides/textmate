@@ -128,6 +128,8 @@ OakRolloverButton* OakCreateCloseButton (NSString* accessibilityLabel)
 	if(self = [super initWithFrame:aRect])
 	{
 		_style = OakBackgroundFillViewStyleNone;
+		// Preserve legacy clipping, especially for one-pixel gutter dividers.
+		self.clipsToBounds = YES;
 		[self setWantsLayer:YES]; // required by NSVisualEffectBlendingModeWithinWindow
 	}
 	return self;
@@ -255,7 +257,7 @@ OakRolloverButton* OakCreateCloseButton (NSString* accessibilityLabel)
 	{
 		NSColor* color = value;
 		[color set];
-		NSRectFill(aRect);
+		NSRectFill(NSIntersectionRect(aRect, self.bounds));
 	}
 }
 @end

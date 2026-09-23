@@ -1,7 +1,10 @@
 #import "OakDocumentView.h"
 #import "GutterView.h"
 #import "OTVStatusBar.h"
+#import "OakLSPPanel.h"
+#import <OakLSP/OakLSPClient.h>
 #import <document/OakDocument.h>
+#import <document/OakDocumentController.h>
 #import <file/type.h>
 #import <text/ctype.h>
 #import <text/parse.h>
@@ -44,6 +47,12 @@ static NSString* const kFoldingsColumnIdentifier  = @"foldings";
 @property (nonatomic, readonly) OTVStatusBar* statusBar;
 @property (nonatomic) SymbolChooser* symbolChooser;
 @property (nonatomic) NSArray* observedKeys;
+@property (nonatomic) OakLSPPanel* lspPanel;
+@property (nonatomic) OakLSPClient* lspClient;
+@property (nonatomic) NSString* lspPath;
+@property (nonatomic) BOOL lspEnabled;
+@property (nonatomic) BOOL symbolBusy;
+@property (nonatomic) NSUInteger symbolSerial;
 - (void)updateStyle;
 @end
 
@@ -292,6 +301,7 @@ static NSString* const kFoldingsColumnIdentifier  = @"foldings";
 
 - (void)setDocument:(OakDocument*)aDocument
 {
+	[self.lspClient stop]; self.lspClient = nil;
 	NSArray* const documentKeys = @[ @"fileType", @"tabSize", @"softTabs" ];
 
 	OakDocument* oldDocument = self.document;
@@ -300,6 +310,8 @@ static NSString* const kFoldingsColumnIdentifier  = @"foldings";
 		for(NSString* key in documentKeys)
 			[oldDocument removeObserver:self forKeyPath:key];
 		[NSNotificationCenter.defaultCenter removeObserver:self name:OakDocumentMarksDidChangeNotification object:oldDocument];
+		[NSNotificationCenter.defaultCenter removeObserver:self name:OakDocumentContentDidChangeNotification object:oldDocument];
+		[NSNotificationCenter.defaultCenter removeObserver:self name:OakDocumentDidSaveNotification object:oldDocument];
 	}
 
 	if(aDocument)
@@ -308,6 +320,8 @@ static NSString* const kFoldingsColumnIdentifier  = @"foldings";
 	if(_document = aDocument)
 	{
 		[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(documentMarksDidChange:) name:OakDocumentMarksDidChangeNotification object:self.document];
+		[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(lspContentChanged:) name:OakDocumentContentDidChangeNotification object:self.document];
+		[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(lspDocumentSaved:) name:OakDocumentDidSaveNotification object:self.document];
 		for(NSString* key in documentKeys)
 			[self.document addObserver:self forKeyPath:key options:NSKeyValueObservingOptionInitial context:nullptr];
 	}
@@ -315,6 +329,7 @@ static NSString* const kFoldingsColumnIdentifier  = @"foldings";
 	[_textView setDocument:self.document];
 	[gutterView reloadData:self];
 	[self updateStyle];
+	[self configureLSP];
 
 	if(_symbolChooser)
 	{
@@ -372,6 +387,367 @@ static NSString* const kFoldingsColumnIdentifier  = @"foldings";
 	}
 }
 
+// LSP stays opt-in. One session follows the active document in this editor.
+- (void)configureLSP
+{
+	++self.symbolSerial; self.symbolBusy = NO;
+	self.textView.hoverProvider = nil;
+	self.textView.lspDiagnostics = nil;
+	self.textView.completionProvider = nil;
+	[self.lspClient stop]; self.lspClient = nil;
+	if(self.lspPanel) [self removeAuxiliaryView:self.lspPanel];
+	self.lspPanel = nil;
+	self.lspPath = self.document.path;
+	BOOL supported = [@[@"c", @"h", @"cc", @"cpp", @"cxx", @"hpp", @"m", @"mm", @"ae"] containsObject:self.lspPath.pathExtension.lowercaseString];
+	if(!supported) return;
+	self.lspPanel = [[OakLSPPanel alloc] initWithFrame:NSZeroRect];
+	self.lspPanel.serverName = [self.lspPath.pathExtension.lowercaseString isEqual:@"ae"] ? @"Aeon" : @"clangd";
+	[self.lspPanel showState:@"Start clangd to check this file" diagnostics:@[] running:NO];
+	__weak OakDocumentView* weakSelf = self;
+	self.lspPanel.toggleServer = ^{
+		OakDocumentView* view = weakSelf;
+		view.lspEnabled = !view.lspEnabled;
+		if(view.lspEnabled) [view startLSP];
+		else {
+			++view.symbolSerial; view.symbolBusy = NO;
+			view.lspPanel.formattingEnabled = NO; view.lspPanel.formattingBusy = NO;
+			view.textView.hoverProvider = nil;
+			view.textView.lspDiagnostics = nil;
+			view.textView.completionProvider = nil;
+			[view.lspClient stop]; view.lspClient = nil;
+			[view.lspPanel showState:@"Stopped · Start clangd to check this file" diagnostics:@[] running:NO];
+		}
+	};
+	self.lspPanel.formatDocument = ^{ [weakSelf formatDocument:nil]; };
+	self.lspPanel.navigate = ^(NSDictionary* diagnostic) { [weakSelf revealLSPDiagnostic:diagnostic]; };
+	__block NSInteger actionVersion = 0;
+	__block __weak OakLSPClient* actionClient = nil;
+	// The panel invalidates its menu on selection, content and session changes.
+	self.lspPanel.requestActions = ^(NSDictionary* diagnostic, void (^completion)(NSArray*, NSString*)) {
+		OakDocumentView* view = weakSelf;
+		actionVersion = view.lspClient.version;
+		actionClient = view.lspClient;
+		[view.lspClient codeActionsForDiagnostic:diagnostic completion:completion];
+	};
+	self.lspPanel.applyAction = ^(NSDictionary* action) {
+		OakDocumentView* view = weakSelf;
+		if(!view || !view.lspEnabled || actionClient != view.lspClient || actionVersion != view.lspClient.version) { NSBeep(); return; }
+		if([action[@"command"] isKindOfClass:NSDictionary.class] && [action[@"command"][@"command"] isEqual:@"aeon.synthesize"]) {
+			OakLSPClient* requestedClient = view.lspClient;
+			NSInteger requestedVersion = actionVersion;
+			NSAlert* consent = [NSAlert new];
+			consent.messageText = @"Run synthesis?";
+			consent.informativeText = [NSString stringWithFormat:@"%@\n\nThe language server chooses how this backend runs. Depending on its configuration, it may send source code to an external service and incur charges. TextMate does not classify the backend as local or remote.", action[@"title"] ?: @"Synthesis"];
+			[consent addButtonWithTitle:@"Run"]; [consent addButtonWithTitle:@"Cancel"];
+			[consent beginSheetModalForWindow:view.window completionHandler:^(NSModalResponse response) {
+			OakDocumentView* view = weakSelf;
+			if(response != NSAlertFirstButtonReturn || !view || view.lspClient != requestedClient || view.lspClient.version != requestedVersion || !view.lspEnabled) return;
+			[view.lspPanel showState:@"Synthesizing… · editing cancels the result" diagnostics:view.lspPanel.diagnostics running:YES];
+			[view.lspClient executeSynthesis:action completion:^(NSString* error) {
+				OakDocumentView* current = weakSelf;
+				if(!current) return;
+				[current.lspPanel showState:error ?: @"Synthesis complete" diagnostics:current.lspPanel.diagnostics running:YES];
+			}];
+			}];
+			return;
+		}
+		NSString* error = nil;
+		NSString* updated = OakLSPApplyCodeAction(action, view.document.content, view.lspPath, actionVersion, &error);
+		if(!updated) { NSAlert* alert = [NSAlert new]; alert.messageText = @"Cannot apply code action"; alert.informativeText = error; [alert beginSheetModalForWindow:view.window completionHandler:nil]; return; }
+		[view.textView selectAll:nil];
+		[view.textView insertText:updated];
+		[view.window makeFirstResponder:view.textView];
+	};
+	[self addAuxiliaryView:self.lspPanel atEdge:NSMinYEdge];
+	if(self.lspEnabled) [self startLSP];
+}
+- (void)startLSP
+{
+	++self.symbolSerial; self.symbolBusy = NO;
+	self.lspPanel.formattingEnabled = NO; self.lspPanel.formattingBusy = NO;
+	self.textView.lspDiagnostics = nil;
+	if(!self.lspPath || !self.lspPanel) return;
+	[self.lspClient stop];
+	self.lspEnabled = YES;
+	self.lspClient = [OakLSPClient new];
+	self.lspPanel.expanded = YES;
+	[self.lspPanel showState:@"Starting clangd…" diagnostics:@[] running:YES];
+	__weak OakDocumentView* weakSelf = self;
+	self.lspClient.applyWorkspaceEdit = ^NSString*(NSDictionary* edit, NSInteger version) {
+		OakDocumentView* view = weakSelf;
+		if(!view || !view.lspEnabled) return @"Editor is no longer active.";
+		NSString* error = nil;
+		NSString* updated = OakLSPApplyCodeAction(@{@"edit":edit}, view.document.content, view.lspPath, version, &error);
+		if(!updated) return error;
+		[view.textView selectAll:nil]; [view.textView insertText:updated];
+		[view.window makeFirstResponder:view.textView];
+		return nil;
+	};
+	__weak OakLSPClient* completionClient = self.lspClient;
+	self.textView.hoverProvider = ^(NSUInteger line, NSUInteger character, void (^reply)(NSString*)) {
+		OakLSPClient* client = completionClient;
+		if(client) [client hoverAtLine:line character:character completion:reply]; else reply(nil);
+	};
+	self.textView.completionProvider = ^(NSUInteger line, NSUInteger character, NSString* prefix, void (^reply)(NSArray<NSString*>*)) {
+		OakLSPClient* client = completionClient;
+		if(client) [client completionsAtLine:line character:character prefix:prefix completion:reply];
+		else reply(@[]);
+	};
+	self.lspClient.notice = ^(NSString* message) {
+		OakDocumentView* view = weakSelf;
+		if(view) [view.lspPanel showState:message diagnostics:view.lspPanel.diagnostics running:YES];
+		if([NSUserDefaults.standardUserDefaults boolForKey:@"LSPAeonSynthesisTest"]) fprintf(stderr,"AEON SERVER: %s\n",message.UTF8String);
+	};
+	self.lspClient.changed = ^(NSString* state, NSArray* diagnostics, NSInteger version) {
+		OakDocumentView* view = weakSelf;
+		if(!view) return;
+		BOOL failed = [state hasPrefix:@"Failed"];
+		view.lspPanel.formattingEnabled = !failed && view.lspClient.supportsFormatting;
+		view.textView.lspDiagnostics = failed ? nil : diagnostics;
+		if(failed) { view.lspEnabled = NO; view.textView.completionProvider = nil; view.textView.hoverProvider = nil; }
+		[view.lspPanel showState:state diagnostics:diagnostics running:!failed];
+	};
+	[self.lspClient startPath:self.lspPath content:self.document.content];
+}
+- (void)lspContentChanged:(NSNotification*)notification
+{
+	if(!self.lspClient || !self.lspEnabled) return;
+	NSInteger previousVersion = self.lspClient.version;
+	[self.lspClient updateContent:self.document.content];
+	if(previousVersion == self.lspClient.version) { self.textView.lspDiagnostics = self.lspPanel.diagnostics; return; }
+	self.textView.lspDiagnostics = nil;
+	[self.lspPanel showState:@"Checking… · clangd" diagnostics:@[] running:YES];
+}
+- (void)lspDocumentSaved:(NSNotification*)notification
+{
+	if(![self.lspPath isEqualToString:self.document.path]) [self configureLSP];
+}
+- (IBAction)formatDocument:(id)sender
+{
+	if(!self.lspEnabled || !self.lspClient.supportsFormatting || self.lspPanel.formattingBusy) { NSBeep(); return; }
+	OakLSPClient* client = self.lspClient;
+	OakDocument* document = self.document;
+	NSString* content = document.content;
+	NSString* path = self.lspPath;
+	NSInteger version = client.version;
+	self.lspPanel.formattingBusy = YES;
+	__weak OakDocumentView* weakSelf = self;
+	[client formatWithTabSize:self.textView.tabSize insertSpaces:self.textView.softTabs completion:^(NSArray* edits, NSString* failure) {
+		OakDocumentView* view = weakSelf;
+		if(!view || view.lspClient != client || view.document != document || !view.lspEnabled) return;
+		view.lspPanel.formattingBusy = NO;
+		NSString* error = failure;
+		if(client.version != version || ![document.content isEqual:content] || ![view.lspPath isEqual:path]) error = @"Document changed. Format again.";
+		NSString* updated = nil;
+		if(!error && edits.count) {
+			NSDictionary* action = @{@"edit":@{@"changes":@{[NSURL fileURLWithPath:path].absoluteString:edits}}};
+			updated = OakLSPApplyCodeAction(action, content, path, version, &error);
+		}
+		if(error) { [view.lspPanel showState:error diagnostics:view.lspPanel.diagnostics running:YES]; return; }
+		if(!updated || [updated isEqual:content]) {
+			[view.lspPanel showState:@"Already formatted" diagnostics:view.lspPanel.diagnostics running:YES]; return;
+		}
+		NSString* selection = view.textView.selectionString;
+		[view.textView selectAll:nil]; [view.textView insertText:updated];
+		view.textView.selectionString = selection;
+		[view.window makeFirstResponder:view.textView];
+	}];
+}
+
+// Strict UTF-16 → native byte-column conversion, also used for cross-file jumps.
+static NSString* LSPSelection(NSString* content, NSDictionary* range)
+{
+	if(![range isKindOfClass:NSDictionary.class]) return nil;
+	NSArray* lines = [content componentsSeparatedByString:@"\n"];
+	NSMutableArray* positions = [NSMutableArray array];
+	for(NSString* key in @[@"start",@"end"]) {
+		NSDictionary* p = range[key];
+		if(![p isKindOfClass:NSDictionary.class] || ![p[@"line"] isKindOfClass:NSNumber.class] || ![p[@"character"] isKindOfClass:NSNumber.class]) return nil;
+		NSInteger line = [p[@"line"] integerValue], column = [p[@"character"] integerValue];
+		if(line < 0 || line >= lines.count || column < 0 || column > [lines[line] length]) return nil;
+		NSString* text = lines[line];
+		if(column > 0 && column < text.length && CFStringIsSurrogateHighCharacter([text characterAtIndex:column-1]) && CFStringIsSurrogateLowCharacter([text characterAtIndex:column])) return nil;
+		[positions addObject:[NSString stringWithFormat:@"%ld:%lu",line+1,[[text substringToIndex:column] lengthOfBytesUsingEncoding:NSUTF8StringEncoding]+1]];
+	}
+	return [positions componentsJoinedByString:@"-"];
+}
+- (void)showLSPSymbolMessage:(NSString*)message
+{
+	if([NSUserDefaults.standardUserDefaults boolForKey:@"LSPSymbolTest"]) fprintf(stderr,"SYMBOL STATUS: %s\n",message.UTF8String);
+	[self.lspPanel showState:message diagnostics:self.lspPanel.diagnostics running:self.lspEnabled];
+}
+- (void)openDefinitionChoice:(id)sender
+{
+	NSDictionary* location = [sender representedObject];
+	NSURL* url = [NSURL URLWithString:location[@"uri"] ?: location[@"targetUri"] ?: @""];
+	if(!url.isFileURL || (url.host.length && ![url.host isEqual:@"localhost"])) { [self showLSPSymbolMessage:@"Only local-file definitions can be opened."]; return; }
+	NSDictionary* range = location[@"targetSelectionRange"] ?: location[@"range"];
+	OakDocument* target = [OakDocumentController.sharedInstance documentWithPath:url.path];
+	__weak OakDocumentView* weakSelf = self;
+	[target loadModalForWindow:self.window completionHandler:^(OakDocumentIOResult result, NSString* error, oak::uuid_t const&) {
+		OakDocumentView* view = weakSelf;
+		if(!view) return;
+		if(result != OakDocumentIOResultSuccess) { [view showLSPSymbolMessage:error ?: @"Could not open definition."]; return; }
+		NSString* selection = LSPSelection(target.content,range);
+		if(!selection) { [view showLSPSymbolMessage:@"The server returned an invalid definition range."]; return; }
+		if(target == view.document) { [view selectAndCenter:selection]; [view.window makeFirstResponder:view.textView]; }
+		else [OakDocumentController.sharedInstance showDocument:target andSelect:text::range_t(to_s(selection)) inProject:nil bringToFront:YES];
+	}];
+}
+- (IBAction)goToDefinition:(id)sender
+{
+	NSDictionary* position = self.textView.lspSymbolPosition;
+	if(!self.lspEnabled || !self.lspClient.supportsDefinition || self.symbolBusy || !position) { NSBeep(); return; }
+	NSUInteger serial = ++self.symbolSerial; self.symbolBusy = YES;
+	NSString* selection = self.textView.selectionString;
+	__weak OakDocumentView* weakSelf = self;
+	[self.lspClient definitionsAtLine:[position[@"line"] unsignedIntegerValue] character:[position[@"character"] unsignedIntegerValue] completion:^(NSArray* locations, NSString* error) {
+		OakDocumentView* view = weakSelf;
+		if(!view || view.symbolSerial != serial) return;
+		view.symbolBusy = NO;
+		if(![selection isEqual:view.textView.selectionString]) return;
+		if(error || !locations.count) { [view showLSPSymbolMessage:error ?: @"No definition found."]; return; }
+		NSMenu* menu = [[NSMenu alloc] initWithTitle:@"Definitions"];
+		for(NSDictionary* location in locations) {
+			NSString* uri = location[@"uri"] ?: location[@"targetUri"];
+			NSDictionary* range = location[@"targetSelectionRange"] ?: location[@"range"];
+			NSMenuItem* item = [[NSMenuItem alloc] initWithTitle:[NSString stringWithFormat:@"%@:%lu",[NSURL URLWithString:uri].path ?: uri,[range[@"start"][@"line"] unsignedIntegerValue]+1] action:@selector(openDefinitionChoice:) keyEquivalent:@""];
+			item.target = view; item.representedObject = location; [menu addItem:item];
+		}
+		if(menu.numberOfItems == 1) [view openDefinitionChoice:menu.itemArray.firstObject];
+		else [menu popUpMenuPositioningItem:nil atLocation:[view.textView convertPoint:[view.window convertPointFromScreen:view.textView.positionForWindowUnderCaret] fromView:nil] inView:view.textView];
+	}];
+}
+
+- (void)applyRenameEdit:(NSDictionary*)edit source:(OakDocument*)source content:(NSString*)content version:(NSInteger)version serial:(NSUInteger)serial
+{
+	auto reject = [&](NSString* reason) { self.symbolBusy = NO; [self showLSPSymbolMessage:reason]; };
+	if(!edit || (!edit[@"changes"] && !edit[@"documentChanges"])) { reject(@"Rename returned no edits."); return; }
+	if(edit[@"changeAnnotations"] || (edit[@"changes"] && edit[@"documentChanges"])) { reject(@"Annotated or ambiguous rename edits are not supported."); return; }
+	NSMutableDictionary* files = [NSMutableDictionary dictionary];
+	for(NSString* uri in edit[@"changes"]) files[uri] = edit[@"changes"][uri];
+	for(NSDictionary* change in edit[@"documentChanges"]) {
+		NSDictionary* document = change[@"textDocument"];
+		if(change[@"kind"] || !document || files[document[@"uri"]]) { reject(@"Rename file operations or duplicate file edits are not supported."); return; }
+		id v = document[@"version"];
+		if(v && v != NSNull.null && (![document[@"uri"] isEqual:[NSURL fileURLWithPath:source.path].absoluteString] || [v integerValue] != version)) { reject(@"Rename targets an unknown or stale document version."); return; }
+		files[document[@"uri"]] = change[@"edits"];
+	}
+	if(!files.count) { reject(@"Rename returned no edits."); return; }
+	NSMutableArray* targets = [NSMutableArray array]; NSMutableSet* paths = [NSMutableSet set]; NSMutableSet* documentIDs = [NSMutableSet set];
+	for(NSString* uri in files) {
+		NSURL* url = [NSURL URLWithString:uri]; NSString* path = url.path.stringByStandardizingPath;
+		if(!url.isFileURL || !path.length || (url.host.length && ![url.host isEqual:@"localhost"]) || [paths containsObject:path]) { reject(@"Rename requires distinct local files."); return; }
+		[paths addObject:path];
+		OakDocument* document = [OakDocumentController.sharedInstance documentWithPath:path];
+		if([documentIDs containsObject:document.identifier]) { reject(@"Rename contains aliases for the same file; no changes applied."); return; }
+		[documentIDs addObject:document.identifier];
+		if(document.inViewingMode || (document != source && document.documentEdited)) { reject(@"Save other modified target files before renaming; no changes applied."); return; }
+		[targets addObject:[@{@"document":document,@"uri":uri} mutableCopy]];
+	}
+	__weak OakDocumentView* weakSelf = self;
+	__block NSUInteger next = 0;
+	__block void (^loadNext)(void);
+	loadNext = ^{
+		OakDocumentView* view = weakSelf;
+		if(!view || view.symbolSerial != serial) { loadNext = nil; return; }
+		void (^fail)(NSString*) = ^(NSString* reason) { view.symbolBusy = NO; [view showLSPSymbolMessage:reason]; loadNext = nil; };
+		if(view.document != source || view.lspClient.version != version || ![source.content isEqual:content]) { fail(@"Document changed. Rename again."); return; }
+		if(next < targets.count) {
+			NSMutableDictionary* target = targets[next++]; OakDocument* document = target[@"document"];
+			[document loadModalForWindow:view.window completionHandler:^(OakDocumentIOResult result, NSString* error, oak::uuid_t const&) {
+				if(result != OakDocumentIOResultSuccess) { weakSelf.symbolBusy = NO; [weakSelf showLSPSymbolMessage:error ?: @"Could not load rename target."]; loadNext = nil; return; }
+				if(document != source && document.documentEdited) { weakSelf.symbolBusy = NO; [weakSelf showLSPSymbolMessage:@"A target has unsaved changes. Save it and rename again."]; loadNext = nil; return; }
+				NSString* snapshot = document.content;
+				NSString* validationError = nil;
+				NSString* updated = OakLSPApplyCodeAction(@{@"edit":@{@"changes":@{target[@"uri"]:files[target[@"uri"]]}}},snapshot,document.path,version,&validationError);
+				if(!updated) { weakSelf.symbolBusy = NO; [weakSelf showLSPSymbolMessage:validationError]; loadNext = nil; return; }
+				target[@"before"] = snapshot; target[@"after"] = updated;
+				if(loadNext) loadNext();
+			}];
+			return;
+		}
+		void (^apply)(BOOL) = ^(BOOL accepted) {
+			OakDocumentView* current = weakSelf;
+			if(!current || current.symbolSerial != serial) return;
+			current.symbolBusy = NO;
+			if(!accepted) return;
+			if(current.document != source || current.lspClient.version != version || ![source.content isEqual:content]) { [current showLSPSymbolMessage:@"Document changed. Rename again."]; return; }
+			for(NSDictionary* target in targets) {
+				OakDocument* document = target[@"document"];
+				if(!document.loaded || document.inViewingMode || ![document.content isEqual:target[@"before"]]) { [current showLSPSymbolMessage:@"A target file changed. No rename edits applied."]; return; }
+			}
+			// Every loaded target is validated before the first synchronous edit.
+			for(NSDictionary* target in targets) {
+				OakDocument* document = target[@"document"];
+				std::multimap<std::pair<size_t,size_t>,std::string> replacements;
+				replacements.emplace(std::make_pair(0,[target[@"before"] lengthOfBytesUsingEncoding:NSUTF8StringEncoding]),to_s(target[@"after"]));
+				[document performReplacements:replacements checksum:0];
+			}
+			if(targets.count > 1) [OakDocumentController.sharedInstance showDocuments:[targets valueForKey:@"document"]];
+			[current showLSPSymbolMessage:[NSString stringWithFormat:@"Renamed in %lu file(s) · unsaved · Undo in each file",targets.count]];
+		};
+		if(targets.count == 1) apply(YES);
+		else {
+			NSAlert* alert = [NSAlert new]; alert.messageText = [NSString stringWithFormat:@"Rename in %lu files?",targets.count];
+			NSMutableArray* names = [NSMutableArray array]; for(NSDictionary* target in targets) [names addObject:[target[@"document"] path]];
+			alert.informativeText = [[names componentsJoinedByString:@"\n"] stringByAppendingString:@"\n\nChanges remain unsaved. Undo is per file."];
+			[alert addButtonWithTitle:@"Rename"]; [alert addButtonWithTitle:@"Cancel"];
+			[alert beginSheetModalForWindow:view.window completionHandler:^(NSModalResponse response) { apply(response == NSAlertFirstButtonReturn); }];
+		}
+		loadNext = nil;
+	};
+	loadNext();
+}
+
+- (IBAction)renameSymbol:(id)sender
+{
+	NSDictionary* position = self.textView.lspSymbolPosition;
+	if(!self.lspEnabled || !self.lspClient.supportsRename || self.symbolBusy || !position || self.document.inViewingMode) { NSBeep(); return; }
+	NSUInteger serial = ++self.symbolSerial; self.symbolBusy = YES;
+	OakDocument* source = self.document; NSString* content = source.content; NSString* selection = self.textView.selectionString;
+	NSInteger version = self.lspClient.version;
+	__weak OakDocumentView* weakSelf = self;
+	[self.lspClient prepareRenameAtLine:[position[@"line"] unsignedIntegerValue] character:[position[@"character"] unsignedIntegerValue] completion:^(NSDictionary* prepared, NSString* error) {
+		OakDocumentView* view = weakSelf;
+		if(!view || view.symbolSerial != serial) return;
+		if(error || !prepared || ![selection isEqual:view.textView.selectionString]) { view.symbolBusy = NO; if(error) [view showLSPSymbolMessage:error]; return; }
+		NSDictionary* renameRange = prepared[@"range"] ?: (prepared[@"start"] ? prepared : nil);
+		if((renameRange && !LSPSelection(content,renameRange)) || (prepared[@"defaultBehavior"] && ![prepared[@"defaultBehavior"] boolValue])) { view.symbolBusy = NO; [view showLSPSymbolMessage:@"This symbol cannot be renamed."]; return; }
+		NSAlert* alert = [NSAlert new]; alert.messageText = @"Rename Symbol"; alert.informativeText = @"Enter the new name. The language server will find references to update.";
+		NSTextField* input = [[NSTextField alloc] initWithFrame:NSMakeRect(0,0,360,24)]; input.stringValue = prepared[@"placeholder"] ?: position[@"word"] ?: @"";
+		input.accessibilityLabel = @"New symbol name"; alert.accessoryView = input;
+		[alert addButtonWithTitle:@"Rename"]; [alert addButtonWithTitle:@"Cancel"];
+		[alert beginSheetModalForWindow:view.window completionHandler:^(NSModalResponse response) {
+			OakDocumentView* current = weakSelf;
+			if(!current || current.symbolSerial != serial) return;
+			if(response != NSAlertFirstButtonReturn) { current.symbolBusy = NO; return; }
+			NSString* name = input.stringValue;
+			if(!name.length || [name rangeOfCharacterFromSet:NSCharacterSet.whitespaceAndNewlineCharacterSet].location != NSNotFound) { current.symbolBusy = NO; [current showLSPSymbolMessage:@"Enter a nonempty symbol name without whitespace."]; return; }
+			if(current.document != source || current.lspClient.version != version || ![source.content isEqual:content]) { current.symbolBusy = NO; [current showLSPSymbolMessage:@"Document changed. Rename again."]; return; }
+			[current.lspClient renameAtLine:[position[@"line"] unsignedIntegerValue] character:[position[@"character"] unsignedIntegerValue] newName:name completion:^(NSDictionary* edit, NSString* failure) {
+				OakDocumentView* editor = weakSelf;
+				if(!editor || editor.symbolSerial != serial) return;
+				if(failure) { editor.symbolBusy = NO; [editor showLSPSymbolMessage:failure]; return; }
+				[editor applyRenameEdit:edit source:source content:content version:version serial:serial];
+			}];
+		}];
+		[alert.window makeFirstResponder:input]; [input selectText:nil];
+	}];
+}
+- (void)revealLSPDiagnostic:(NSDictionary*)diagnostic
+{
+	NSArray<NSString*>* lines = [self.document.content componentsSeparatedByString:@"\n"];
+	auto position = [&](NSString* lineKey, NSString* columnKey) {
+		NSUInteger line = MIN([diagnostic[lineKey] unsignedIntegerValue], lines.count-1);
+		NSString* text = lines[line];
+		NSUInteger utf16 = MIN([diagnostic[columnKey] unsignedIntegerValue], text.length);
+		NSUInteger byteColumn = [[text substringToIndex:utf16] lengthOfBytesUsingEncoding:NSUTF8StringEncoding];
+		return [NSString stringWithFormat:@"%lu:%lu", line+1, byteColumn+1];
+	};
+	[self selectAndCenter:[NSString stringWithFormat:@"%@-%@", position(@"line", @"column"), position(@"endLine", @"endColumn")]];
+}
+
 - (IBAction)toggleLineNumbers:(id)sender
 {
 	BOOL isVisibleFlag = ![gutterView visibilityForColumnWithIdentifier:GVLineNumbersColumnIdentifier];
@@ -383,6 +759,9 @@ static NSString* const kFoldingsColumnIdentifier  = @"foldings";
 
 - (BOOL)validateMenuItem:(NSMenuItem*)aMenuItem
 {
+	if(aMenuItem.action == @selector(goToDefinition:)) return self.lspEnabled && self.lspClient.supportsDefinition && !self.symbolBusy && self.textView.lspSymbolPosition != nil;
+	if(aMenuItem.action == @selector(renameSymbol:)) return self.lspEnabled && self.lspClient.supportsRename && !self.symbolBusy && self.textView.lspSymbolPosition != nil && !self.document.inViewingMode;
+	if(aMenuItem.action == @selector(formatDocument:)) return self.lspEnabled && self.lspClient.supportsFormatting && !self.lspPanel.formattingBusy;
 	if([aMenuItem action] == @selector(toggleLineNumbers:))
 		[aMenuItem setTitle:[gutterView visibilityForColumnWithIdentifier:GVLineNumbersColumnIdentifier] ? @"Hide Line Numbers" : @"Show Line Numbers"];
 	else if([aMenuItem action] == @selector(takeTabSizeFrom:))

@@ -1,0 +1,2 @@
+# Bundles > Aeon > Run (Cmd-R)
+def main (args:Int) : Unit := print "Hello from Aeon in TextMate!"

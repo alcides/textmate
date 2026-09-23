@@ -4,6 +4,7 @@
 #import <io/path.h>
 #import <text/format.h>
 #import <crash/info.h>
+#import <OakLSP/OakLSP.h>
 
 static void sig_int_handler (void* unused)
 {
@@ -48,6 +49,20 @@ static void increase_max_open_files (rlim_t required = 2048)
 
 int main (int argc, char const* argv[])
 {
+	if(argc == 2 && strcmp(argv[1], "--lsp-build-check") == 0)
+	{
+		@autoreleasepool {
+			try {
+				puts(OakLSPBuildCheck().UTF8String);
+				return EXIT_SUCCESS;
+			}
+			catch(std::exception const& e) {
+				fprintf(stderr, "LSP build check failed: %s\n", e.what());
+				return EXIT_FAILURE;
+			}
+		}
+	}
+
 	oak::application_t::set_support(path::join(path::home(), "Library/Application Support/TextMate"));
 	oak::application_t app(argc, argv);
 

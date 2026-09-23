@@ -55,6 +55,8 @@ struct data_source_t
 {
 	if(self = [super initWithFrame:frame])
 	{
+		// Preserve the clipping behavior of the original pre-macOS-14 build.
+		self.clipsToBounds = YES;
 		id fontName = [NSUserDefaults.standardUserDefaults objectForKey:@"NSFixedPitchFont"];
 		id fontSize = [NSUserDefaults.standardUserDefaults objectForKey:@"NSFixedPitchFontSize"];
 		crash_reporter_info_t info("User has font name override %s, size %s", BSTR(fontName), BSTR(fontSize));
@@ -308,18 +310,20 @@ static void DrawText (std::string const& text, CGRect const& rect, CGFloat basel
 
 - (void)drawRect:(NSRect)aRect
 {
+	aRect = NSIntersectionRect(aRect, self.bounds);
+	if(NSIsEmptyRect(aRect)) return;
 	[self.backgroundColor set];
-	NSRectFill(NSIntersectionRect(aRect, self.frame));
+	NSRectFill(aRect);
 
 	[self setupSelectionRects];
 
 	[self.selectionBackgroundColor set];
 	for(auto const& rect : backgroundRects)
-		NSRectFillUsingOperation(NSIntersectionRect(rect, NSIntersectionRect(aRect, self.frame)), NSCompositingOperationSourceOver);
+		NSRectFillUsingOperation(NSIntersectionRect(rect, aRect), NSCompositingOperationSourceOver);
 
 	[self.selectionBorderColor set];
 	for(auto const& rect : borderRects)
-		NSRectFillUsingOperation(NSIntersectionRect(rect, NSIntersectionRect(aRect, self.frame)), NSCompositingOperationSourceOver);
+		NSRectFillUsingOperation(NSIntersectionRect(rect, aRect), NSCompositingOperationSourceOver);
 
 	if(!self.antiAlias)
 		CGContextSetShouldAntialias(NSGraphicsContext.currentContext.CGContext, false);

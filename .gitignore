@@ -1,3 +1,10 @@
 build.ninja
 local.rave
+build/
+build-xcode26/
+build-release/
+.release-deps/
+__pycache__/
+Prototype/artifacts/
+Prototype/.cache/
 Frameworks/license/src/revoked_serials.cc

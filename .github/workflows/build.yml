@@ -1,18 +1,109 @@
-name: CI
-
-on: [push]
-
+name: Build and release
+on:
+  push:
+    branches: [master]
+    tags: ['lsp-v*']
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 jobs:
   build:
-    runs-on: macOS-latest
-
+    name: Build ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-15
+          - arch: x86_64
+            runner: macos-15-intel
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+      MACOSX_DEPLOYMENT_TARGET: '14.0'
     steps:
-    - uses: actions/checkout@v2
-      with:
-        submodules: recursive
-    - name: Setup
-      run: brew install boost capnp google-sparsehash multimarkdown ninja ragel
-    - name: Configure
-      run: ./configure
-    - name: Build
-      run: ninja TextMate
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: capnproto/capnproto
+          ref: 373e61ec89e2359f1c362e9b2eadc552f4779306 # v1.5.0
+          path: .release-deps/capnproto
+          persist-credentials: false
+      - name: Install build tools
+        run: brew install boost google-sparsehash multimarkdown ninja ragel cmake
+      - name: Build static dependencies and application
+        run: bash .github/scripts/build-release.sh '${{ matrix.arch }}'
+      - name: Verify native application
+        run: |
+          python3 .github/scripts/package-release.py verify build-release/release/Applications/TextMate/TextMate.app '${{ matrix.arch }}'
+          build-release/release/Applications/TextMate/TextMate.app/Contents/MacOS/TextMate --lsp-build-check
+          codesign --verify --deep --strict build-release/release/Applications/TextMate/TextMate.app
+      - name: Preserve application permissions and symlinks
+        run: tar -czf TextMate-${{ matrix.arch }}.tar.gz -C build-release/release/Applications/TextMate TextMate.app
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.arch }}
+          path: TextMate-${{ matrix.arch }}.tar.gz
+          if-no-files-found: error
+  package:
+    name: Package ARM and universal
+    needs: build
+    runs-on: macos-15
+    timeout-minutes: 15
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: native-*
+          merge-multiple: true
+          path: native
+      - name: Merge, sign, validate and archive
+        run: |
+          mkdir -p native/arm64 native/x86_64 dist
+          tar -xzf native/TextMate-arm64.tar.gz -C native/arm64
+          tar -xzf native/TextMate-x86_64.tar.gz -C native/x86_64
+          python3 .github/scripts/package-release.py merge native/arm64/TextMate.app native/x86_64/TextMate.app native/universal/TextMate.app
+          python3 .github/scripts/package-release.py verify native/arm64/TextMate.app arm64
+          python3 .github/scripts/package-release.py verify native/universal/TextMate.app arm64 x86_64
+          native/universal/TextMate.app/Contents/MacOS/TextMate --lsp-build-check
+          ditto -c -k --sequesterRsrc --keepParent native/arm64/TextMate.app dist/TextMate-LSP-arm64.zip
+          ditto -c -k --sequesterRsrc --keepParent native/universal/TextMate.app dist/TextMate-LSP-universal.zip
+          cd dist
+          shasum -a 256 *.zip > SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-packages
+          path: dist/*
+          if-no-files-found: error
+  release:
+    name: Publish GitHub release
+    if: startsWith(github.ref, 'refs/tags/lsp-v')
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-packages
+          path: dist
+      - name: Create release with both architectures
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: gh release create "$RELEASE_TAG" dist/* --verify-tag --title "TextMate LSP $RELEASE_TAG" --notes-file .github/RELEASE-NOTES.md --prerelease

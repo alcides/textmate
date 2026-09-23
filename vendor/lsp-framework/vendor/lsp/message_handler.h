@@ -1,0 +1,224 @@
+#pragma once
+
+#include <functional>
+#include <future>
+#include <mutex>
+#include <utility>
+#include <unordered_map>
+#include <lsp/connection.h>
+#include <lsp/error.h>
+#include <lsp/jsonrpc/jsonrpc.h>
+#include <lsp/message_base.h>
+#include <lsp/request_result.h>
+#include <lsp/serialization.h>
+#include <lsp/thread_pool.h>
+
+namespace lsp{
+
+/*
+ * MessageHandler
+ */
+
+class MessageHandler{
+public:
+	explicit MessageHandler(Connection connection, unsigned int maxResponseThreads = std::thread::hardware_concurrency() / 2);
+	~MessageHandler() = default;
+
+	void processNextMessage();
+	void setConnection(Connection connection);
+
+	/*
+	 * Callback registration
+	 */
+
+	template<typename M, typename F>
+	auto on(F&& callback) -> MessageHandler&;
+
+	template<typename M, typename F>
+	requires (M::Kind == MessageKind::Request)
+	auto onCustom(std::string_view method, F&& callback) -> MessageHandler&;
+
+	template<typename M, typename F>
+	requires (M::Kind == MessageKind::Notification)
+	auto onCustom(std::string_view method, F&& callback) -> MessageHandler&;
+
+	void remove(const std::string& method);
+
+	/*
+	 * sendRequest
+	 */
+
+	using ResponseErrorCallback = void(*)(const ResponseError&);
+	static void nullErrorCallback(const ResponseError&){}
+
+	template<typename M, typename F, typename E = ResponseErrorCallback>
+	requires MessageHasParams<M>
+	auto sendRequest(const typename M::Params& params, F&& then, E&& error = nullErrorCallback) -> RequestId;
+
+	template<typename M, typename F, typename E = ResponseErrorCallback>
+	requires MessageHasParams<M>
+	auto sendCustomRequest(std::string_view method, const typename M::Params& params, F&& then, E&& error = nullErrorCallback) -> RequestId;
+
+	template<typename M, typename F, typename E = ResponseErrorCallback>
+	requires (!MessageHasParams<M>)
+	auto sendRequest(F&& then, E&& error = nullErrorCallback) -> RequestId;
+
+	template<typename M, typename F, typename E = ResponseErrorCallback>
+	requires (!MessageHasParams<M>)
+	auto sendCustomRequest(std::string_view method, F&& then, E&& error = nullErrorCallback) -> RequestId;
+
+	template<typename M>
+	requires MessageHasParams<M> && MessageHasResult<M>
+	[[nodiscard]] auto sendRequest(const typename M::Params& params) -> RequestResult<typename M::Result>;
+
+	template<typename M>
+	requires MessageHasParams<M> && MessageHasResult<M>
+	[[nodiscard]] auto sendCustomRequest(std::string_view method, const typename M::Params& params) -> RequestResult<typename M::Result>;
+
+	template<typename M>
+	requires (!MessageHasParams<M>) && MessageHasResult<M>
+	[[nodiscard]] auto sendRequest() -> RequestResult<typename M::Result>;
+
+	template<typename M>
+	requires (!MessageHasParams<M>) && MessageHasResult<M>
+	[[nodiscard]] auto sendCustomRequest(std::string_view method) -> RequestResult<typename M::Result>;
+
+	/*
+	 * sendNotification
+	 */
+
+	void sendNotification(std::string_view method, const json::Value& params = {});
+
+	template<typename M>
+	requires MessageHasParams<M> && (!MessageHasResult<M>)
+	void sendNotification(const typename M::Params& params);
+
+	template<typename M>
+	requires MessageHasParams<M> && (!MessageHasResult<M>)
+	void sendCustomNotification(std::string_view method, const typename M::Params& params);
+
+	template<typename M>
+	requires (!MessageHasParams<M>) && (!MessageHasResult<M>)
+	void sendNotification();
+
+	template<typename M>
+	requires (!MessageHasParams<M>) && (!MessageHasResult<M>)
+	void sendCustomNotification(std::string_view method);
+
+	/*
+	 * RequestContext
+	 */
+
+	class RequestContext{
+		friend class MessageHandler;
+	public:
+		RequestContext(const RequestContext&)     = default;
+		RequestContext(RequestContext&&) noexcept = default;
+		~RequestContext();
+
+		[[nodiscard]] static auto get() -> const RequestContext&;
+		[[nodiscard]] static auto tryGet() -> const RequestContext*;
+
+		[[nodiscard]] auto id() const -> const RequestId&{ return m_requestId; }
+
+	private:
+		[[maybe_unused]] MessageHandler* m_messageHandler = nullptr;
+		RequestId       m_requestId;
+
+		RequestContext(MessageHandler& messageHandler, RequestId requestId);
+	};
+
+private:
+	class ResponseResultBase;
+	class RequestResultBase;
+	using RequestResultPtr  = std::unique_ptr<RequestResultBase>;
+	using ResponseResultPtr = std::unique_ptr<ResponseResultBase>;
+	using HandlerWrapper    = std::function<void(json::Value&&, const RequestId*, Connection::BatchSender*)>;
+
+	// General
+	Connection                                      m_connection;
+	ThreadPool                                      m_threadPool;
+	// Incoming requests
+	std::unordered_map<std::string, HandlerWrapper> m_requestHandlersByMethod;
+	std::mutex                                      m_requestHandlersMutex;
+	// Outgoing requests
+	std::mutex                                      m_pendingRequestsMutex;
+	std::vector<RequestResultPtr>                   m_pendingRequests;
+
+	template<typename T>
+	void sendResponse(const RequestId& requestId, const T& result, Connection::BatchSender* batchSender);
+
+	template<typename M>
+	void handleRequestResult(RequestResult<M>& result, Connection::BatchSender* batchSender);
+
+	void processRequest(jsonrpc::Request&& request, Connection::BatchSender* batchSender);
+	void processResponse(jsonrpc::Response&& response);
+	void addHandler(std::string_view method, HandlerWrapper&& handlerFunc);
+	void addPendingRequest(RequestResultPtr result);
+	void sendErrorResponse(
+		const RequestId& requestId,
+		int errorCode,
+		std::string_view errorMessage,
+		const std::optional<json::Value>& errorData,
+		Connection::BatchSender* batchSender);
+
+	static auto nextUniqueRequestId() -> json::Integer;
+
+	template<typename T>
+	struct IsFuture : std::false_type{};
+
+	template<typename... Args>
+	struct IsFuture<std::future<Args...>> : std::true_type{};
+
+	/*
+	 * Request result wrapper
+	 */
+
+	class RequestResultBase{
+	public:
+		RequestResultBase(RequestId id) : m_requestId(std::move(id)){}
+		virtual ~RequestResultBase() = default;
+		virtual void setValue(json::Value&& json) = 0;
+		virtual void setError(ResponseError&& error) = 0;
+
+		auto requestId() const -> const RequestId&{ return m_requestId; }
+
+	protected:
+		template<typename T>
+		auto setValueFromJson(T& value, json::Value&& json) -> bool;
+
+	private:
+		RequestId m_requestId;
+	};
+
+	template<typename T, typename F, typename E>
+	class CallbackRequestResult final : public RequestResultBase{
+	public:
+		CallbackRequestResult(RequestId id, F&& then, E&& error);
+
+		void setValue(json::Value&& json) override;
+		void setError(ResponseError&& error) override;
+
+	private:
+		F m_then;
+		E m_error;
+	};
+
+	template<typename T>
+	class FutureRequestResult final : public RequestResultBase{
+	public:
+		FutureRequestResult(RequestId id) : RequestResultBase(std::move(id)){}
+
+		auto future() -> std::future<T>{ return m_promise.get_future(); }
+
+		void setValue(json::Value&& json) override;
+		void setError(ResponseError&& error) override;
+
+	private:
+		std::promise<T> m_promise;
+	};
+};
+
+} // namespace lsp
+
+#include "message_handler.inl"

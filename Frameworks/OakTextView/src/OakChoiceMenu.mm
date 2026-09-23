@@ -18,10 +18,22 @@ NSUInteger const OakChoiceMenuKeyMovement = 4;
 
 enum action_t { kActionNop, kActionTab, kActionReturn, kActionCancel, kActionMoveUp, kActionMoveDown, kActionPageUp, kActionPageDown, kActionMoveToBeginning, kActionMoveToEnd };
 
+@interface OakChoicePanel : NSPanel
+@end
+@implementation OakChoicePanel
+- (BOOL)canBecomeKeyWindow { return NO; }
+- (BOOL)canBecomeMainWindow { return NO; }
+@end
+@interface OakChoiceTableView : NSTableView
+@end
+@implementation OakChoiceTableView
+- (BOOL)acceptsFirstMouse:(NSEvent*)event { return YES; }
+@end
+
 @implementation OakChoiceMenu
 - (id)init
 {
-	if(self = [super initWithWindow:[[NSPanel alloc] initWithContentRect:NSZeroRect styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO]])
+	if(self = [super initWithWindow:[[OakChoicePanel alloc] initWithContentRect:NSZeroRect styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO]])
 	{
 		_choices = [NSArray array];
 		_choiceIndex = NSNotFound;
@@ -31,7 +43,8 @@ enum action_t { kActionNop, kActionTab, kActionReturn, kActionCancel, kActionMov
 		self.window.level              = NSStatusWindowLevel;
 		self.window.ignoresMouseEvents = YES;
 
-		_tableView = [[NSTableView alloc] initWithFrame:NSZeroRect];
+		_tableView = [[OakChoiceTableView alloc] initWithFrame:NSZeroRect];
+		_tableView.clipsToBounds = YES;
 		[_tableView addTableColumn:[[NSTableColumn alloc] initWithIdentifier:@"mainColumn"]];
 		if(@available(macos 11.0, *))
 			_tableView.style = NSTableViewStylePlain;
@@ -41,6 +54,8 @@ enum action_t { kActionNop, kActionTab, kActionReturn, kActionCancel, kActionMov
 		_tableView.allowsMultipleSelection = YES;
 		_tableView.dataSource              = self;
 		_tableView.delegate                = self;
+		_tableView.target                  = self;
+		_tableView.action                  = @selector(acceptClickedChoice:);
 		_tableView.backgroundColor         = NSColor.clearColor;
 		[_tableView reloadData];
 
@@ -54,6 +69,7 @@ enum action_t { kActionNop, kActionTab, kActionReturn, kActionCancel, kActionMov
 		scrollView.drawsBackground       = NO;
 
 		NSVisualEffectView* effectView = [[NSVisualEffectView alloc] initWithFrame:NSZeroRect];
+		effectView.clipsToBounds = YES;
 		effectView.autoresizingMask = NSViewWidthSizable|NSViewHeightSizable;
 		effectView.material         = NSVisualEffectMaterialMenu;
 
@@ -73,6 +89,33 @@ enum action_t { kActionNop, kActionTab, kActionReturn, kActionCancel, kActionMov
 	[self close];
 }
 
+- (void)setChoiceAccepted:(void (^)(NSUInteger))callback {
+	_choiceAccepted = [callback copy];
+	self.window.ignoresMouseEvents = callback == nil;
+	_tableView.allowsMultipleSelection = callback == nil;
+	_tableView.accessibilityLabel = callback ? @"Completion suggestions" : @"Snippet choices";
+}
+- (void)acceptClickedChoice:(id)sender {
+	NSInteger row = _tableView.clickedRow;
+	if(row >= 0 && row < (NSInteger)_choices.count && self.choiceAccepted) {
+		self.choiceIndex = row;
+		self.choiceAccepted(row);
+	}
+}
+- (void)close {
+	[NSNotificationCenter.defaultCenter removeObserver:self name:NSViewBoundsDidChangeNotification object:nil];
+	[self.window.parentWindow removeChildWindow:self.window];
+	[super close];
+}
+- (void)positionAtScreenPoint:(NSPoint)point {
+	NSRect screen = (self.window.parentWindow.screen ?: NSScreen.mainScreen).visibleFrame;
+	NSSize size = self.window.frame.size;
+	if(point.y-size.height < NSMinY(screen)) point.y += size.height + self.font.pointSize * 1.5;
+	point.x = MAX(NSMinX(screen), MIN(point.x, NSMaxX(screen)-size.width));
+	point.y = MAX(NSMinY(screen)+size.height, MIN(point.y, NSMaxY(screen)));
+	[self.window setFrameTopLeftPoint:point];
+}
+
 - (void)sizeToFit
 {
 	CGFloat const kTableViewPadding = 4;
@@ -82,7 +125,7 @@ enum action_t { kActionNop, kActionTab, kActionReturn, kActionCancel, kActionMov
 	if(_choices.count == 0)
 		[textField sizeToFit];
 
-	CGFloat width = 60;
+	CGFloat width = self.choiceAccepted ? 180 : 60;
 	for(NSInteger i = 0; i < MIN(_choices.count, 256); ++i)
 	{
 		textField.stringValue = _choices[i];
@@ -103,7 +146,7 @@ enum action_t { kActionNop, kActionTab, kActionReturn, kActionCancel, kActionMov
 - (void)viewBoundsDidChange:(NSNotification*)aNotification
 {
 	NSView* aView = [[aNotification object] documentView];
-	[self.window setFrameTopLeftPoint:[[aView window] convertRectToScreen:[aView convertRect:(NSRect){ _topLeftPosition, NSZeroSize } toView:nil]].origin];
+	[self positionAtScreenPoint:[[aView window] convertRectToScreen:[aView convertRect:(NSRect){ _topLeftPosition, NSZeroSize } toView:nil]].origin];
 }
 
 - (NSString*)selectedChoice
@@ -161,6 +204,7 @@ enum action_t { kActionNop, kActionTab, kActionReturn, kActionCancel, kActionMov
 		res = OakCreateLabel(@"", self.font, NSTextAlignmentLeft, NSLineBreakByTruncatingTail);
 		res.identifier = identifier;
 	}
+	res.stringValue = _choices[row];
 	return res;
 }
 
@@ -176,6 +220,7 @@ enum action_t { kActionNop, kActionTab, kActionReturn, kActionCancel, kActionMov
 	_topLeftPosition = [aView convertRect:[[aView window] convertRectFromScreen:(NSRect){ aPoint, NSZeroSize }] fromView:nil].origin;
 	[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(viewBoundsDidChange:) name:NSViewBoundsDidChangeNotification object:[[aView enclosingScrollView] contentView]];
 	[[aView window] addChildWindow:self.window ordered:NSWindowAbove];
+	[self positionAtScreenPoint:aPoint];
 
 	[self.window orderFront:self];
 }

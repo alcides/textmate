@@ -1,5 +1,9 @@
 # TextMate
 
+This fork adds experimental LSP support and an Aeon Cmd-R bundle. See
+[release builds and installation](RELEASE.md) for ARM-only/universal packages,
+CI, signing limitations and fork-specific setup.
+
 ## Download
 
 You can [download TextMate from here](https://macromates.com/download).
@@ -17,6 +21,14 @@ Before you submit a bug report please read the [writing bug reports](https://git
 ![textmate](https://raw.github.com/textmate/textmate/gh-pages/images/screenshot.png)
 
 # Building
+
+This experimental checkout includes a pinned `lsp-framework` dependency and an
+Objective-C++ build-check bridge. It targets macOS 14 or later and has been
+built with Xcode 26.3 on Intel macOS 15.7.5. It includes an opt-in native
+diagnostics prototype for clangd: see [Prototype/README.md](Prototype/README.md).
+See [LSP-VALIDATION.md](LSP-VALIDATION.md) for build instructions and validation
+status, and [the vendored library notes](vendor/lsp-framework/README.md) for
+the pinned revision, local patches and licensing.
 
 ## Setup
 

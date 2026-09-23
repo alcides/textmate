@@ -195,6 +195,19 @@ namespace ng
 		return !info.suggestions().empty();
 	}
 
+	bool editor_t::has_active_completion () const
+	{
+		return _completion_info.revision() == _buffer.revision() && _completion_info.ranges() == _selections && !_completion_info.suggestions().empty();
+	}
+
+	void editor_t::set_external_completions (std::vector<std::string> const& suffixes)
+	{
+		_completion_info.set_revision(_buffer.revision());
+		_completion_info.set_ranges(_selections);
+		_completion_info.set_prefix_ranges(dissect_columnar(_buffer, _selections));
+		_completion_info.set_suggestions(suffixes);
+	}
+
 	void editor_t::next_completion (std::string const& scopeAttributes)
 	{
 		if(setup_completion(scopeAttributes))

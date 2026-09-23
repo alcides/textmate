@@ -1,0 +1,7 @@
+target "${dirname}" {
+	require lsp-framework
+	headers src/*.h
+	sources src/*.mm
+	add FLAGS "-Ivendor/lsp-framework/vendor -Ivendor/lsp-framework/generated"
+	frameworks Foundation
+}

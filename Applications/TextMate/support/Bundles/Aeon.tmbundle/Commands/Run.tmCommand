@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>name</key><string>Run</string>
+<key>uuid</key><string>899C211A-D997-4D87-B6CC-EF3DA2707C19</string>
+<key>scope</key><string>source.aeon</string>
+<key>keyEquivalent</key><string>@r</string>
+<key>semanticClass</key><string>process.run.script.aeon</string>
+<key>beforeRunningCommand</key><string>saveActiveFile</string>
+<key>input</key><string>document</string>
+<key>outputLocation</key><string>newWindow</string>
+<key>outputFormat</key><string>html</string>
+<key>autoScrollOutput</key><true/>
+<key>version</key><integer>2</integer>
+<key>command</key><string>#!/usr/bin/env ruby18
+load File.join(ENV['TM_BUNDLE_SUPPORT'], 'run.rb')
+</string>
+</dict></plist>

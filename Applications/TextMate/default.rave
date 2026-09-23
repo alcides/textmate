@@ -1,4 +1,5 @@
 target "${dirname}" {
+	require OakLSP
 	require BundleEditor BundleMenu BundlesManager CommitWindow CrashReporter DocumentWindow Find HTMLOutputWindow MenuBuilder OakAppKit OakCommand OakFilterList OakFoundation OakSystem OakTextView Preferences SoftwareUpdate authorization bundles cf command crash document io kvdb license network ns plist regexp scm settings text theme
 
 	set HTML_HEADER     "${dir}/templates/header.html"
@@ -26,6 +27,7 @@ target "${dirname}" {
 	files resources/* icons/*.icns @PrivilegedTool "Resources"
 	files @mate @tm_query    "MacOS"
 	files about/*            "Resources/About"
+	files ../../vendor/lsp-framework/{LICENSE,THIRD_PARTY_NOTICES.md,README.md} "Resources/About/lsp-framework"
 	files Info.plist         "."
 	copy  support/*          "SharedSupport"
 	copy  @Dialog @Dialog2   "PlugIns"

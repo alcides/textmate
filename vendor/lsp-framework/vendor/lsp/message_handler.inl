@@ -1,0 +1,379 @@
+#pragma once
+
+#include <cassert>
+#include <concepts>
+#include "message_handler.h"
+
+namespace lsp{
+
+/*
+ * sendResponse
+ */
+
+template<typename T>
+void MessageHandler::sendResponse(const RequestId& requestId, const T& result, Connection::BatchSender* batchSender)
+{
+	if(batchSender)
+	{
+		auto responseWriter = batchSender->writeResponse(requestId);
+		responseWriter.writeData(
+			[](std::string_view key, const T& value, json::ObjectWriter& objectWriter)
+			{
+				writeJson(key, value, objectWriter);
+			}, result);
+	}
+	else
+	{
+		auto responseSender = m_connection.response(requestId);
+		responseSender.writeData(result);
+		responseSender.submit();
+	}
+}
+
+template<typename T>
+void MessageHandler::handleRequestResult(RequestResult<T>& result, Connection::BatchSender* batchSender)
+{
+	try
+	{
+		sendResponse(result.requestId(), result.get(), batchSender);
+	}
+	catch(const RequestError& e)
+	{
+		sendErrorResponse(result.requestId(), e.code(), e.what(), e.data(), batchSender);
+	}
+	catch(std::exception& e)
+	{
+		sendErrorResponse(result.requestId(), MessageError::InternalError, e.what(), {}, batchSender);
+	}
+}
+
+/*
+ * on
+ */
+
+template<typename M, typename F>
+auto MessageHandler::on(F&& callback) -> MessageHandler&
+{
+	return onCustom<M>(M::Method, std::forward<F>(callback));
+}
+
+template<typename M, typename F>
+requires (M::Kind == MessageKind::Request)
+auto MessageHandler::onCustom(std::string_view method, F&& callback) -> MessageHandler&
+{
+	addHandler(method,
+		[this, callback = std::forward<F>(callback)](
+			[[maybe_unused]] json::Value&& json, [[maybe_unused]] const RequestId* requestId, [[maybe_unused]] Connection::BatchSender* batchSender) mutable
+		{
+			assert(requestId);
+
+			auto context = RequestContext(*this, *requestId);
+
+			auto result =
+				[&json, &callback, requestId]() mutable
+				{
+					if constexpr(MessageHasParams<M>)
+					{
+						static_assert(std::invocable<F, typename M::Params>,
+							"Request callback must be callable with matching params");
+						static_assert(std::constructible_from<RequestResult<typename M::Result>,
+							std::invoke_result_t<F, typename M::Params>>,
+							"Request callback must return a value or callable that can construct a MessageType::Result");
+
+						auto params = typename M::Params();
+
+						try
+						{
+							fromJson(std::move(json), params);
+						}
+						catch(const json::Error& e)
+						{
+							throw RequestError(MessageError::InvalidParams, e.what());
+						}
+
+						return RequestResult<typename M::Result>(callback(std::move(params)), *requestId);
+					}
+					else
+					{
+						(void)json;
+						static_assert(std::invocable<F>, "Request callback must be callable without params");
+						static_assert(std::constructible_from<RequestResult<typename M::Result>, std::invoke_result_t<F>>,
+							"Request callback must return a value or callable that can construct a MessageType::Result");
+						return RequestResult<typename M::Result>(callback(), *requestId);
+					}
+				}();
+
+			// Requests that are part of a batch cannot be handled asynchronously
+			if(!result.isDeferred() || batchSender)
+			{
+				handleRequestResult(result, batchSender);
+			}
+			else
+			{
+				m_threadPool.addTask(
+					[this, requestId = *requestId, result = std::move(result)]() mutable
+					{
+						auto context = RequestContext(*this, std::move(requestId));
+						handleRequestResult(result, nullptr);
+					});
+			}
+		});
+
+	return *this;
+}
+
+template<typename M, typename F>
+requires (M::Kind == MessageKind::Notification)
+auto MessageHandler::onCustom(std::string_view method, F&& callback) -> MessageHandler&
+{
+	addHandler(method,
+		[this, callback = std::forward<F>(callback)](
+			[[maybe_unused]] json::Value&& json, [[maybe_unused]] const RequestId* requestId, [[maybe_unused]] Connection::BatchSender* batchSender) mutable
+		{
+			(void)this; // Only used for async requests within if constexpr
+			static_assert(M::Kind == MessageKind::Notification);
+			assert(!requestId);
+
+			if constexpr(MessageHasParams<M>)
+			{
+				static_assert(std::invocable<F, typename M::Params>, "Notification callback must be callable with matching params");
+
+				auto params = typename M::Params();
+
+				try
+				{
+					fromJson(std::move(json), params);
+				}
+				catch(const json::Error&)
+				{
+					// Swallow invalid params for notifications since no error response is sent
+					// Might add an error hook for such cases later...
+					return;
+				}
+
+				if constexpr(IsFuture<std::invoke_result_t<F, typename M::Params>>{})
+					m_threadPool.addTask([future = callback(std::move(params))](){ future.wait(); });
+				else if constexpr(std::invocable<std::invoke_result_t<F, typename M::Params>>)
+					m_threadPool.addTask(callback(std::move(params)));
+				else
+					callback(std::move(params));
+			}
+			else
+			{
+				static_assert(std::invocable<F>, "Notification callback must be callable without params");
+
+				if constexpr(IsFuture<std::invoke_result_t<F>>{})
+					m_threadPool.addTask([future = callback()](){ future.wait(); });
+				else if constexpr(std::invocable<std::invoke_result_t<F>>)
+					m_threadPool.addTask(callback());
+				else
+					callback();
+			}
+		});
+
+	return *this;
+}
+
+/*
+ * sendRequest
+ */
+
+template<typename M, typename F, typename E>
+requires MessageHasParams<M>
+auto MessageHandler::sendRequest(const typename M::Params& params, F&& then, E&& error) -> RequestId
+{
+	return sendCustomRequest<M>(M::Method, params, std::forward<F>(then), std::forward<E>(error));
+}
+
+template<typename M, typename F, typename E>
+requires MessageHasParams<M>
+auto MessageHandler::sendCustomRequest(std::string_view method, const typename M::Params& params, F&& then, E&& error) -> RequestId
+{
+	const auto requestId = nextUniqueRequestId();
+	auto result = std::make_unique<CallbackRequestResult<typename M::Result, std::decay_t<F>, std::decay_t<E>>>(
+		requestId,
+		std::forward<F>(then),
+		std::forward<E>(error));
+	auto requestSender = m_connection.request(method, requestId);
+
+	requestSender.writeParams(params);
+	requestSender.submit();
+	addPendingRequest(std::move(result));
+
+	return requestId;
+}
+
+template<typename M, typename F, typename E>
+requires (!MessageHasParams<M>)
+auto MessageHandler::sendRequest(F&& then, E&& error) -> RequestId
+{
+	return sendCustomRequest<M>(M::Method, std::forward<F>(then), std::forward<E>(error));
+}
+
+template<typename M, typename F, typename E>
+requires (!MessageHasParams<M>)
+auto MessageHandler::sendCustomRequest(std::string_view method, F&& then, E&& error) -> RequestId
+{
+	const auto requestId = nextUniqueRequestId();
+	auto result = std::make_unique<CallbackRequestResult<typename M::Result, std::decay_t<F>, std::decay_t<E>>>(
+		requestId,
+		std::forward<F>(then),
+		std::forward<E>(error));
+	auto requestSender = m_connection.request(method, requestId);
+
+	requestSender.submit();
+	addPendingRequest(std::move(result));
+
+	return requestId;
+}
+
+template<typename M>
+requires MessageHasParams<M> && MessageHasResult<M>
+auto MessageHandler::sendRequest(const typename M::Params& params) -> RequestResult<typename M::Result>
+{
+	return sendCustomRequest<M>(M::Method, params);
+}
+
+template<typename M>
+requires MessageHasParams<M> && MessageHasResult<M>
+auto MessageHandler::sendCustomRequest(std::string_view method, const typename M::Params& params) -> RequestResult<typename M::Result>
+{
+	const auto requestId     = nextUniqueRequestId();
+	auto       result        = std::make_unique<FutureRequestResult<typename M::Result>>(requestId);
+	auto       future        = result->future();
+	auto       requestSender = m_connection.request(method, requestId);
+
+	requestSender.writeParams(params);
+	requestSender.submit();
+	addPendingRequest(std::move(result));
+
+	return RequestResult(std::move(future), requestId);
+}
+
+template<typename M>
+requires (!MessageHasParams<M>) && MessageHasResult<M>
+auto MessageHandler::sendRequest() -> RequestResult<typename M::Result>
+{
+	return sendCustomRequest<M>(M::Method);
+}
+
+template<typename M>
+requires (!MessageHasParams<M>) && MessageHasResult<M>
+auto MessageHandler::sendCustomRequest(std::string_view method) -> RequestResult<typename M::Result>
+{
+	const auto requestId     = nextUniqueRequestId();
+	auto       result        = std::make_unique<FutureRequestResult<typename M::Result>>(requestId);
+	auto       future        = result->future();
+	auto       requestSender = m_connection.request(method, requestId);
+
+	requestSender.submit();
+	addPendingRequest(std::move(result));
+
+	return RequestResult(std::move(future), requestId);
+}
+
+/*
+ * sendNotification
+ */
+
+template<typename M>
+requires MessageHasParams<M> && (!MessageHasResult<M>)
+void MessageHandler::sendNotification(const typename M::Params& params)
+{
+	sendCustomNotification<M>(M::Method, params);
+}
+
+template<typename M>
+requires MessageHasParams<M> && (!MessageHasResult<M>)
+void MessageHandler::sendCustomNotification(std::string_view method, const typename M::Params& params)
+{
+	auto notificationSender = m_connection.notification(method);
+	notificationSender.writeParams(params);
+	notificationSender.submit();
+}
+
+template<typename M>
+requires (!MessageHasParams<M>) && (!MessageHasResult<M>)
+void MessageHandler::sendNotification()
+{
+	sendCustomNotification<M>(M::Method);
+}
+
+template<typename M>
+requires (!MessageHasParams<M>) && (!MessageHasResult<M>)
+void MessageHandler::sendCustomNotification(std::string_view method)
+{
+	auto notificationSender = m_connection.notification(method);
+	notificationSender.submit();
+}
+
+/*
+ * RequestResultBase
+ */
+
+template<typename T>
+auto MessageHandler::RequestResultBase::setValueFromJson(T& value, json::Value&& json) -> bool
+{
+	try
+	{
+		fromJson(std::move(json), value);
+	}
+	catch(const json::Error& e)
+	{
+		// If an invalid response was received, report it as an internal error
+		setError(ResponseError(MessageError::InternalError, e.what()));
+		return false;
+	}
+
+	return true;
+}
+
+/*
+ * CallbackRequestResult
+ */
+
+template<typename T, typename F, typename E>
+MessageHandler::CallbackRequestResult<T, F, E>::CallbackRequestResult(RequestId id, F&& then, E&& error)
+	: RequestResultBase(std::move(id))
+	, m_then(std::forward<F>(then))
+	, m_error(std::forward<E>(error))
+{
+	static_assert(std::invocable<F, T>,
+		"Response callback must be callable with request result");
+	static_assert(std::invocable<E, const ResponseError&>,
+		"Response error callback must be callable with const RequestError&");
+}
+
+template<typename T, typename F, typename E>
+void MessageHandler::CallbackRequestResult<T, F, E>::setValue(json::Value&& json)
+{
+	auto value = T();
+	if(setValueFromJson(value, std::move(json)))
+		m_then(std::move(value));
+}
+
+template<typename T, typename F, typename E>
+void MessageHandler::CallbackRequestResult<T, F, E>::setError(ResponseError&& error)
+{
+	m_error(std::move(error));
+}
+
+/*
+ * FutureRequestResult
+ */
+
+template<typename T>
+void MessageHandler::FutureRequestResult<T>::setValue(json::Value&& json)
+{
+	auto value = T();
+	if(setValueFromJson(value, std::move(json)))
+		m_promise.set_value(std::move(value));
+}
+
+template<typename T>
+void MessageHandler::FutureRequestResult<T>::setError(ResponseError&& error)
+{
+	m_promise.set_exception(std::make_exception_ptr(std::move(error)));
+}
+
+} // namespace lsp
