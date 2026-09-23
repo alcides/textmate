@@ -3,3 +3,5 @@
 *.yml whitespace=-indent-with-non-tab
 *.rb whitespace=-indent-with-non-tab
 vendor/lsp-framework/** -whitespace
+# Preserve the upstream license's standard space indentation.
+Applications/TextMate/support/Bundles/Aeon.tmbundle/LICENSE-vscode-aeon.txt whitespace=-indent-with-non-tab

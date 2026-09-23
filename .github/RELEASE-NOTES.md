@@ -1,5 +1,10 @@
 Experimental TextMate fork with LSP support and an Aeon Cmd-R bundle.
 
+Aeon syntax highlighting now uses the grammar from `alcides/vscode-aeon`,
+including declarations, types, keywords, operators, literals and embedded
+Python. It works without a running LSP and preserves Run/Format shortcuts.
+The upstream Apache-2.0 license and source attribution are included.
+
 Aeon servers now start in the document's discovered project root, so local
 `libraries/` imports work from nested files as well. The LSP workspace root
 matches the server's working directory. Verified with aeonbox's Git-pinned Aeon

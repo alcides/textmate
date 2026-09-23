@@ -27,8 +27,10 @@ is hardcoded in the bundle.
 
 ## Behavior
 
-- `.ae` maps to `source.aeon` through a minimal bundled grammar (comments and
-  strings), which scopes ⌘R to Aeon and leaves other language commands unchanged.
+- `.ae` maps to `source.aeon` through the grammar imported from `alcides/vscode-aeon`,
+  which scopes ⌘R to Aeon and leaves other language commands unchanged. It highlights
+  declarations, types, keywords, operators, literals and embedded Python as well
+  as comments and strings. See [AEON-HIGHLIGHTING.md](AEON-HIGHLIGHTING.md).
 - Existing files are saved by TextMate's `saveActiveFile` command machinery.
   Canceling a required save cancels the run. Untitled Aeon documents use the
   shared `save_if_untitled('ae')` helper and a temporary file.

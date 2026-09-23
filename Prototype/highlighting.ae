@@ -1,0 +1,16 @@
+# Aeon syntax from the VS Code extension
+open String
+import Agent
+
+@example
+def greet (name : String) : String := "Hello, " + name
+def answer (_ : Unit) : Int := 42
+def fraction (_ : Unit) : Float := 3.14
+def choose (flag : Bool) : Int := if flag then 1 else 0
+
+type Positive := { n : Int | n > 0 }
+def identity := fun x -> x
+def polymorphic := Λa => fun x -> x
+def enabled : Bool := true
+def os : Unit := native_import "os"
+def increment (x : Int) : Int := native "x + 1"

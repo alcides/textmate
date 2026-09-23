@@ -8,6 +8,8 @@
 #import <OakLSP/OakLSPClient.h>
 #import <WebKit/WebKit.h>
 #include <bundles/bundles.h>
+#include <parse/grammar.h>
+#include <parse/parse.h>
 #include <libproc.h>
 #include <sys/proc_info.h>
 
@@ -614,6 +616,55 @@ static void RunSymbolTest(NSString* path) {
 }
 
 void RunLSPPrototypeTest(NSString* path) {
+	if([NSUserDefaults.standardUserDefaults boolForKey:@"LSPAeonHighlightTest"]) {
+		[DocumentWindowController disableSessionSave];
+		auto item = bundles::lookup(oak::uuid_t("DE924C99-967E-4820-B5AD-F2C648C1C572"));
+		if(!item) { fprintf(stderr,"AEON SYNTAX: FAIL grammar not indexed\n"); return; }
+		auto grammar = parse::parse_grammar(item);
+		struct Sample { char const* source; char const* token; char const* expected; };
+		Sample samples[] = {
+			{"# a comment", "comment", "comment.line.aeon"},
+			{"open Agent", "open", "keyword.control.import.aeon"},
+			{"open Agent", "Agent", "entity.name.namespace.aeon"},
+			{"def greet (x : Int) : Int := 42", "def", "keyword.declaration.function.aeon"},
+			{"def greet (x : Int) : Int := 42", "greet", "entity.name.function.aeon"},
+			{"def greet (x : Int) : Int := 42", "Int", "storage.type.primitive.aeon"},
+			{"def greet (x : Int) : Int := 42", ":=", "keyword.operator.assignment.aeon"},
+			{"42", "42", "constant.numeric.integer.aeon"},
+			{"3.14", "3.14", "constant.numeric.float.aeon"},
+			{"true", "true", "constant.language.boolean.aeon"},
+			{"if x then 1 else 0", "then", "keyword.control.aeon"},
+			{"type Positive", "Positive", "entity.name.type.aeon"},
+			{"let 1 session := x", "session", "variable.declaration.aeon"},
+			{"@example", "example", "entity.name.tag.macro.aeon"},
+			{"fun x -> x", "fun", "keyword.control.lambda.aeon"},
+			{"λx → x", "λ", "keyword.control.lambda.aeon"},
+			{"Λa => x", "Λ", "keyword.operator.kind.lambda.symbol.aeon"},
+			{"x ≤ 2", "≤", "keyword.operator.comparison.aeon"},
+			{"\"Olá 🌍\"", "Olá", "string.quoted.double.aeon"},
+			{R"ae("a\"b")ae", R"ae(\")ae", "constant.character.escape.aeon"},
+			{"native_import \"os\"", "os", "string.quoted.module.python"},
+			{"native \"x + 1\"", "x", "source.python"},
+		};
+		for(auto const& sample : samples) {
+			std::string source = sample.source;
+			std::map<size_t, scope::scope_t> scopes;
+			parse::parse(source.data(), source.data()+source.size(), grammar->seed(), scopes, true);
+			auto found = scopes.upper_bound(source.find(sample.token));
+			std::string actual = found == scopes.begin() ? "" : scope::to_s(std::prev(found)->second);
+			if(actual.find(sample.expected) == std::string::npos) {
+				fprintf(stderr,"AEON SYNTAX: FAIL token=%s expected=%s actual=%s\n",sample.token,sample.expected,actual.c_str()); return;
+			}
+		}
+		fprintf(stderr,"AEON SYNTAX: PASS %lu native grammar scope checks\n",sizeof(samples)/sizeof(samples[0]));
+		OakDocument* doc = [OakDocumentController.sharedInstance documentWithPath:path];
+		doc.recentTrackingDisabled = YES; doc.keepBackupFile = NO;
+		[OakDocumentController.sharedInstance showDocument:doc andSelect:text::pos_t::undefined inProject:nil bringToFront:YES];
+		dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3*NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+			CapturePrototype([DocumentWindowController controllerForDocument:doc].window, @"aeon-highlighting.png");
+		});
+		return;
+	}
 	if([NSUserDefaults.standardUserDefaults boolForKey:@"LSPAeonImportsTest"]) {
 		[DocumentWindowController disableSessionSave];
 		NSString* expected = [NSUserDefaults.standardUserDefaults stringForKey:@"LSPAeonImportRoot"];
