@@ -90,7 +90,10 @@ jobs:
           if-no-files-found: error
   release:
     name: Publish GitHub release
-    if: startsWith(github.ref, 'refs/tags/lsp-v')
+    if: >-
+      github.repository == 'alcides/textmate' &&
+      github.event_name != 'pull_request' &&
+      (github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/lsp-v'))
     needs: package
     runs-on: ubuntu-latest
     permissions:
@@ -106,5 +109,4 @@ jobs:
       - name: Create release with both architectures
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
-        run: gh release create "$RELEASE_TAG" dist/* --verify-tag --title "TextMate LSP $RELEASE_TAG" --notes-file .github/RELEASE-NOTES.md --prerelease
+        run: bash .github/scripts/publish-release.sh

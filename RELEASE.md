@@ -15,9 +15,11 @@ then repeats architecture/dependency/signature checks. ARM resources are used
 for the universal app. Both native architectures are smoke-tested; the merged
 app is additionally smoke-tested on the ARM packaging runner.
 
-Pushes to `master`, pull requests and manual workflow runs produce downloadable
-Actions artifacts but do not publish releases. To publish a prerelease from a
-tested commit, push a new tag matching `lsp-v*`, for example:
+Successful pushes to `master` and manual workflow runs on `master` automatically
+publish a prerelease named `lsp-build-<run-number>-<commit>`. Each build gets its
+own release; previous downloads remain available. Pull requests only produce
+Actions artifacts and never publish releases. For a named version, push a new
+tag matching `lsp-v*`, for example:
 
 ```sh
 git tag -a lsp-v0.1.0 -m 'First experimental LSP release'
@@ -30,9 +32,11 @@ After both builds and packaging pass, the workflow creates a GitHub prerelease:
 - `TextMate-LSP-arm64.zip` — arm64 only
 - `SHA256SUMS.txt`
 
-No external publishing token is required. Only the final tag-triggered job has
+No external publishing token is required. Only the final publishing job has
 `contents: write`; PR/build jobs are read-only and do not retain checkout credentials.
-The workflow never publishes upstream or silently replaces existing releases.
+Publishing is restricted to `alcides/textmate`. Assets and checksums are uploaded
+to a draft before it becomes public. Reruns resume draft uploads or leave an
+already-published release unchanged.
 
 ## Signing and installation
 
