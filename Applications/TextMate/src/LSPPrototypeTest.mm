@@ -8,6 +8,8 @@
 #import <OakLSP/OakLSPClient.h>
 #import <WebKit/WebKit.h>
 #include <bundles/bundles.h>
+#include <libproc.h>
+#include <sys/proc_info.h>
 
 @interface OakDocumentView (LSPPrototypeTesting)
 @property (nonatomic) OakLSPPanel* lspPanel;
@@ -612,6 +614,42 @@ static void RunSymbolTest(NSString* path) {
 }
 
 void RunLSPPrototypeTest(NSString* path) {
+	if([NSUserDefaults.standardUserDefaults boolForKey:@"LSPAeonImportsTest"]) {
+		[DocumentWindowController disableSessionSave];
+		NSString* expected = [NSUserDefaults.standardUserDefaults stringForKey:@"LSPAeonImportRoot"];
+		NSString* root = OakLSPAeonProjectRoot(path);
+		if(![root.stringByResolvingSymlinksInPath isEqual:expected.stringByResolvingSymlinksInPath]) {
+			fprintf(stderr,"AEON IMPORTS: FAIL root %s expected %s\n",root.UTF8String,expected.UTF8String); return;
+		}
+		NSString* parentDirectory = NSFileManager.defaultManager.currentDirectoryPath;
+		__block OakLSPClient* client = [OakLSPClient new];
+		__block BOOL completed = NO;
+		client.changed = ^(NSString* state, NSArray* diagnostics, NSInteger version) {
+			if(completed || (![state isEqual:@"Ready"] && ![state hasPrefix:@"Failed"])) return;
+			completed = YES;
+			struct proc_vnodepathinfo info = {};
+			BOOL read = proc_pidinfo((int)client.processIdentifier, PROC_PIDVNODEPATHINFO, 0, &info, sizeof(info)) == sizeof(info);
+			NSString* cwd = read ? [NSString stringWithUTF8String:info.pvi_cdir.vip_path] : @"unavailable";
+			BOOL correct = [cwd.stringByResolvingSymlinksInPath isEqual:root.stringByResolvingSymlinksInPath];
+			BOOL preserved = [NSFileManager.defaultManager.currentDirectoryPath isEqual:parentDirectory];
+			NSUInteger errors = 0;
+			for(NSDictionary* diagnostic in diagnostics) {
+				errors += [diagnostic[@"severity"] integerValue] == 1;
+				fprintf(stderr,"AEON IMPORTS: diagnostic %s\n",[diagnostic[@"message"] UTF8String]);
+			}
+			fprintf(stderr,"AEON IMPORTS: %s path=%s cwd=%s parent-cwd-preserved=%d errors=%lu state=%s\n",
+				correct && preserved && !errors && [state isEqual:@"Ready"] ? "PASS" : "FAIL",
+				path.UTF8String, cwd.UTF8String, preserved, errors, state.UTF8String);
+			[client stop]; client.changed = nil; client = nil;
+		};
+		[client startPath:path content:[NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil]];
+		dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 90*NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+			if(completed) return;
+			completed = YES; fprintf(stderr,"AEON IMPORTS: FAIL timeout\n");
+			[client stop]; client.changed = nil; client = nil;
+		});
+		return;
+	}
 	if([NSUserDefaults.standardUserDefaults boolForKey:@"LSPAeonSyncTest"]) {
 		[DocumentWindowController disableSessionSave];
 		OakDocument* doc = [OakDocumentController.sharedInstance documentWithPath:path];

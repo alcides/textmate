@@ -1,5 +1,11 @@
 Experimental TextMate fork with LSP support and an Aeon Cmd-R bundle.
 
+Aeon servers now start in the document's discovered project root, so local
+`libraries/` imports work from nested files as well. The LSP workspace root
+matches the server's working directory. Verified with aeonbox's Git-pinned Aeon
+server; projects using newer syntax such as `linear` still need a compatible
+server via `LSPAeonPath`, rather than the older PyPI build.
+
 - **TextMate-LSP-universal.zip**: Apple Silicon (arm64) and Intel (x86_64).
 - **TextMate-LSP-arm64.zip**: Apple Silicon only.
 - Requires macOS 14 or later. SHA-256 checksums are included.

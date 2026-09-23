@@ -3,6 +3,9 @@
 // Common standalone/Homebrew locations, followed by absolute PATH entries.
 NSString* OakLSPFindUV(void);
 
+// Nearest ancestor containing libraries/, bounded by a project/repository marker.
+NSString* OakLSPAeonProjectRoot(NSString* documentPath);
+
 // Validate the complete action before modifying the editor. nil means rejection.
 NSString* OakLSPApplyCodeAction(NSDictionary* action, NSString* content, NSString* path, NSInteger version, NSString** error);
 

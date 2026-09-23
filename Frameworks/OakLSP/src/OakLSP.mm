@@ -1,4 +1,5 @@
 #import "OakLSP.h"
+#import "OakLSPClient.h"
 #include <lsp/types.h>
 #include <lsp/version.h>
 #include <lsp/protocol_version.h>
@@ -9,6 +10,30 @@
 
 NSString* OakLSPBuildCheck ()
 {
+	// Project-root regression tests: nested sources, libraries, worktree markers,
+	// spaces/Unicode, standalone files and isolation from enclosing projects.
+	NSFileManager* files = NSFileManager.defaultManager;
+	NSString* temporary = [NSTemporaryDirectory() stringByAppendingPathComponent:[@"TextMate-root-" stringByAppendingString:NSUUID.UUID.UUIDString]];
+	NSString* project = [temporary stringByAppendingPathComponent:@"Aeon ação project"];
+	BOOL created = YES;
+	for(NSString* relative in @[@"libraries", @"examples/nested", @"inner/.git", @"standalone"])
+		created &= [files createDirectoryAtPath:[project stringByAppendingPathComponent:relative] withIntermediateDirectories:YES attributes:nil error:nil];
+	BOOL roots = created;
+	for(NSString* relative in @[@"main.ae", @"examples/nested/test.ae", @"libraries/Agent.ae"])
+		roots &= [OakLSPAeonProjectRoot([project stringByAppendingPathComponent:relative]) isEqual:project];
+	NSString* inner = [project stringByAppendingPathComponent:@"inner"];
+	roots &= [OakLSPAeonProjectRoot([inner stringByAppendingPathComponent:@"file.ae"]) isEqual:inner];
+	[files removeItemAtPath:[inner stringByAppendingPathComponent:@".git"] error:nil];
+	roots &= [@"gitdir: /unused" writeToFile:[inner stringByAppendingPathComponent:@".git"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
+	roots &= [OakLSPAeonProjectRoot([inner stringByAppendingPathComponent:@"file.ae"]) isEqual:inner];
+	[files removeItemAtPath:[project stringByAppendingPathComponent:@"libraries"] error:nil];
+	NSString* standalone = [project stringByAppendingPathComponent:@"standalone"];
+	roots &= [OakLSPAeonProjectRoot([standalone stringByAppendingPathComponent:@"file.ae"]) isEqual:standalone];
+	roots &= [@"[project]" writeToFile:[project stringByAppendingPathComponent:@"pyproject.toml"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
+	roots &= [OakLSPAeonProjectRoot([standalone stringByAppendingPathComponent:@"file.ae"]) isEqual:project];
+	[files removeItemAtPath:temporary error:nil];
+	if(!roots) throw std::runtime_error("Aeon project-root discovery failed");
+
 	for(auto const& source : {R"({"title":"Synthesize","command":{"title":"Synthesize","command":"aeon.synthesize","arguments":[]}})", R"({"title":"Command","command":"example.run"})", R"({"title":"Edit","edit":{"changes":{}}})"}) {
 		lsp::json::Parser parser(source);
 		lsp::OneOf<lsp::Command, lsp::CodeAction> action;

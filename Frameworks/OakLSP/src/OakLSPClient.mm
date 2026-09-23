@@ -22,6 +22,23 @@ NSString* OakLSPFindUV(void) {
 	return nil;
 }
 
+NSString* OakLSPAeonProjectRoot(NSString* documentPath) {
+	NSString* directory = documentPath.stringByStandardizingPath.stringByDeletingLastPathComponent;
+	NSString* fallback = directory;
+	NSFileManager* files = NSFileManager.defaultManager;
+	while(directory.length) {
+		BOOL isDirectory = NO;
+		if([files fileExistsAtPath:[directory stringByAppendingPathComponent:@"libraries"] isDirectory:&isDirectory] && isDirectory) return directory;
+		// Do not borrow libraries from another repository or an enclosing project.
+		for(NSString* marker in @[@".git", @".hg", @"pyproject.toml"])
+			if([files fileExistsAtPath:[directory stringByAppendingPathComponent:marker]]) return directory;
+		NSString* parent = directory.stringByDeletingLastPathComponent;
+		if([parent isEqual:directory]) break;
+		directory = parent;
+	}
+	return fallback;
+}
+
 namespace {
 // Serialize setup across documents, and resolve latest only once per app launch.
 std::mutex aeonSetupMutex;
@@ -125,7 +142,13 @@ struct Session {
 			}
 			if(![NSFileManager.defaultManager isExecutableFileAtPath:executable])
 				throw std::runtime_error(aeon ? "Aeon not found. Set LSPAeonPath to the aeon executable." : "clangd not found. Set LSPClangdPath to an executable path.");
-			process = lsp::Process::start(executable.UTF8String, aeon ? std::vector<std::string>{"-lsp"} : std::vector<std::string>{"--log=error", "--background-index=true", "-j=2"});
+			NSString* documentPath = [NSString stringWithUTF8String:path.c_str()];
+			NSString* root = aeon ? OakLSPAeonProjectRoot(documentPath) : documentPath.stringByDeletingLastPathComponent;
+			// macOS env changes only the child cwd and execs Aeon, preserving its PID
+			// and stdio. Never chdir the multithreaded editor or interpolate a shell.
+			process = aeon
+				? lsp::Process::start("/usr/bin/env", {"-C", root.UTF8String, executable.UTF8String, "-lsp"})
+				: lsp::Process::start(executable.UTF8String, {"--log=error", "--background-index=true", "-j=2"});
 			processIdentifier = process.id();
 			endpoint = std::make_unique<lsp::ClientEndpoint>(process.stdIO());
 			auto uri = lsp::Uri::fileUriFromPath(path);
@@ -197,7 +220,13 @@ struct Session {
 			});
 			lsp::InitializeParams params;
 			params.processId = getpid();
-			params.rootUri = lsp::Uri::fileUriFromPath([[NSString stringWithUTF8String:path.c_str()] stringByDeletingLastPathComponent].UTF8String);
+			params.rootUri = lsp::Uri::fileUriFromPath(root.UTF8String);
+			if(aeon) {
+				lsp::WorkspaceFolder folder;
+				folder.uri = lsp::Uri::fileUriFromPath(root.UTF8String);
+				folder.name = root.lastPathComponent.UTF8String;
+				params.workspaceFolders = lsp::Array<lsp::WorkspaceFolder>{folder};
+			}
 			params.capabilities.textDocument.emplace();
 			params.capabilities.textDocument->definition.emplace();
 			params.capabilities.textDocument->definition->linkSupport = true;

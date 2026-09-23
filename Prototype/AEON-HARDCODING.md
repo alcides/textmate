@@ -26,6 +26,11 @@ is unset. See [AEON-SETUP.md](AEON-SETUP.md).
 
 ### Unversioned diagnostics and synchronization
 
+Aeon startup discovers an ancestor containing `libraries/`, bounded by `.git`,
+`.hg` or `pyproject.toml`, and sets both the child process cwd and the LSP
+workspace root to it. This matches Aeon's cwd-based import search and is not
+server-advertised configuration. See [AEON-PROJECT-ROOT.md](AEON-PROJECT-ROOT.md).
+
 [Session diagnostics and worker](/Users/alcides/Code/TextmateLSP/Frameworks/OakLSP/src/OakLSPClient.mm:88)
 assume this Aeon server publishes once per open/change without a version.
 `analysisVersion`, `analysisText`, `awaitingDiagnostics`, and `analysisStarted`
