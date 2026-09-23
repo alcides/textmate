@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>name</key><string>Refinement Type</string>
+	<key>scope</key><string>source.aeon - comment - string</string>
+	<key>tabTrigger</key><string>ref</string>
+	<key>content</key><string>{${1:v} : ${2:Int} | $1 &gt;= ${3:0}}$0</string>
+	<key>uuid</key><string>E9D56293-A2BC-4D31-80F7-000000000009</string>
+</dict>
+</plist>

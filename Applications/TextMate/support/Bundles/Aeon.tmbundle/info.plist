@@ -3,5 +3,34 @@
 <plist version="1.0"><dict>
 <key>name</key><string>Aeon</string>
 <key>uuid</key><string>21EBC7AF-FE90-42B9-A608-592D6447CF73</string>
-<key>mainMenu</key><dict><key>items</key><array><string>899C211A-D997-4D87-B6CC-EF3DA2707C19</string><string>B19FB1FA-4893-48CB-9A10-3D0881FE0463</string></array></dict>
+<key>mainMenu</key>
+<dict>
+	<key>items</key>
+	<array>
+		<string>899C211A-D997-4D87-B6CC-EF3DA2707C19</string>
+		<string>B19FB1FA-4893-48CB-9A10-3D0881FE0463</string>
+		<string>43E05F43-AEF0-4B39-B60A-5807DE0B1FB9</string>
+	</array>
+	<key>submenus</key>
+	<dict>
+		<key>43E05F43-AEF0-4B39-B60A-5807DE0B1FB9</key>
+		<dict>
+			<key>name</key><string>Templates</string>
+			<key>items</key>
+			<array>
+				<string>E9D56293-A2BC-4D31-80F7-000000000001</string>
+				<string>E9D56293-A2BC-4D31-80F7-000000000002</string>
+				<string>E9D56293-A2BC-4D31-80F7-000000000003</string>
+				<string>E9D56293-A2BC-4D31-80F7-000000000004</string>
+				<string>E9D56293-A2BC-4D31-80F7-000000000005</string>
+				<string>E9D56293-A2BC-4D31-80F7-000000000006</string>
+				<string>E9D56293-A2BC-4D31-80F7-000000000007</string>
+				<string>E9D56293-A2BC-4D31-80F7-000000000008</string>
+				<string>E9D56293-A2BC-4D31-80F7-000000000009</string>
+				<string>E9D56293-A2BC-4D31-80F7-000000000010</string>
+				<string>E9D56293-A2BC-4D31-80F7-000000000011</string>
+			</array>
+		</dict>
+	</dict>
+</dict>
 </dict></plist>

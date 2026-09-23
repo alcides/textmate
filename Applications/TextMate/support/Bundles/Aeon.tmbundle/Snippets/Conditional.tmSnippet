@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>name</key><string>Conditional</string>
+	<key>scope</key><string>source.aeon - comment - string</string>
+	<key>tabTrigger</key><string>if</string>
+	<key>content</key><string>if ${1:true} then
+	${2:0}
+else
+	${3:1}$0</string>
+	<key>uuid</key><string>E9D56293-A2BC-4D31-80F7-000000000007</string>
+</dict>
+</plist>

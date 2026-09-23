@@ -419,7 +419,11 @@ static NSString* const kFoldingsColumnIdentifier  = @"foldings";
 			[view.lspPanel showState:@"Stopped · Start clangd to check this file" diagnostics:@[] running:NO];
 		}
 	};
-	self.lspPanel.navigate = ^(NSDictionary* diagnostic) { [weakSelf revealLSPDiagnostic:diagnostic]; };
+	self.lspPanel.navigate = ^(NSDictionary* diagnostic, BOOL focusEditor) {
+		OakDocumentView* view = weakSelf;
+		[view revealLSPDiagnostic:diagnostic];
+		if(focusEditor) [view.window makeFirstResponder:view.textView];
+	};
 	__block NSInteger actionVersion = 0;
 	__block __weak OakLSPClient* actionClient = nil;
 	// The panel invalidates its menu on selection, content and session changes.
@@ -765,7 +769,7 @@ static NSString* LSPSelection(NSString* content, NSDictionary* range)
 		NSUInteger byteColumn = [[text substringToIndex:utf16] lengthOfBytesUsingEncoding:NSUTF8StringEncoding];
 		return [NSString stringWithFormat:@"%lu:%lu", line+1, byteColumn+1];
 	};
-	[self selectAndCenter:[NSString stringWithFormat:@"%@-%@", position(@"line", @"column"), position(@"endLine", @"endColumn")]];
+	[self selectAndCenter:position(@"line", @"column")];
 }
 
 - (IBAction)toggleLineNumbers:(id)sender

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>name</key><string>Parameterized Inductive Type</string>
+	<key>scope</key><string>source.aeon - comment - string</string>
+	<key>tabTrigger</key><string>indp</string>
+	<key>content</key><string>inductive ${1:Maybe} ${2:a}
+| ${3:none} : ($1 $2)
+| ${4:some} (${5:value} : $2) : ($1 $2)
+$0</string>
+	<key>uuid</key><string>E9D56293-A2BC-4D31-80F7-000000000004</string>
+</dict>
+</plist>

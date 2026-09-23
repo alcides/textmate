@@ -23,6 +23,57 @@
 - (NSMenu*)codeActionMenuForActions:(NSArray*)actions error:(NSString*)error;
 @end
 
+// Supply the clicked row while exercising the real table target/action wiring.
+@interface LSPDiagnosticClickTestTable : NSTableView
+@property (nonatomic) NSInteger testClickedRow;
+@end
+@implementation LSPDiagnosticClickTestTable
+- (NSInteger)clickedRow { return self.testClickedRow; }
+@end
+
+static BOOL TestDiagnosticRows(OakDocumentView* view) {
+	OakLSPPanel* panel = view.lspPanel;
+	NSArray* original = panel.diagnostics;
+	NSMutableDictionary* diagnostic = [original.firstObject mutableCopy];
+	NSString* message = @"First line\nsecond line\r\nthird line\rfourth\u2028fifth\u2029last";
+	diagnostic[@"message"] = message;
+	[panel showState:@"Ready" diagnostics:@[diagnostic] running:YES];
+	NSTableView* table = [panel valueForKey:@"table"];
+	BOOL passed = table.target == panel && table.action != nil;
+	for(NSTableColumn* column in table.tableColumns) {
+		NSView* cell = [panel tableView:table viewForTableColumn:column row:0];
+		NSTextField* label = (NSTextField*)cell.subviews.firstObject;
+		passed &= [label.toolTip isEqual:message] && [cell.toolTip isEqual:message];
+		passed &= [label.stringValue rangeOfCharacterFromSet:NSCharacterSet.newlineCharacterSet].location == NSNotFound;
+		if([column.identifier isEqual:@"message"]) passed &= label.alignment == NSTextAlignmentLeft && [label.stringValue containsString:@"last"];
+	}
+	passed &= [[panel tableView:table rowViewForRow:0].toolTip isEqual:message];
+	fprintf(stderr,"LSP ROW TEST: presentation=%d\n",passed);
+	[view.window makeFirstResponder:table];
+	[table selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
+	passed &= view.window.firstResponder == table;
+	NSString* destination = view.textView.selectionString;
+	NSTextField* detail = [panel valueForKey:@"detail"];
+	passed &= [detail.toolTip isEqual:message] && [detail.stringValue rangeOfCharacterFromSet:NSCharacterSet.newlineCharacterSet].location == NSNotFound;
+	fprintf(stderr,"LSP ROW TEST: selection/footer=%d destination=%s\n",passed,destination.UTF8String);
+	LSPDiagnosticClickTestTable* click = [LSPDiagnosticClickTestTable new];
+	click.testClickedRow = 0;
+	// Move away without changing the selected row, then click that same row again.
+	view.textView.selectionString = @"1:1";
+	[view.window makeFirstResponder:table];
+	[NSApp sendAction:table.action to:table.target from:click];
+	passed &= [view.textView.selectionString isEqual:destination] && view.window.firstResponder == view.textView;
+	fprintf(stderr,"LSP ROW TEST: click=%d selection=%s focus=%s\n",passed,view.textView.selectionString.UTF8String,NSStringFromClass(view.window.firstResponder.class).UTF8String);
+	click.testClickedRow = -1;
+	view.textView.selectionString = @"1:1";
+	NSString* unchanged = view.textView.selectionString;
+	[NSApp sendAction:table.action to:table.target from:click];
+	passed &= [view.textView.selectionString isEqual:unchanged];
+	[panel showState:@"Ready" diagnostics:original running:YES];
+	fprintf(stderr,"LSP ROW TEST: %s single-line rows/footer, full multiline tooltips, repeated-click navigation, editor focus, empty click\n", passed ? "PASS" : "FAIL");
+	return passed;
+}
+
 static void CapturePrototype(NSWindow* window, NSString* name) {
 	[window.contentView layoutSubtreeIfNeeded];
 	[window displayIfNeeded];
@@ -40,6 +91,94 @@ static void CapturePrototype(NSWindow* window, NSString* name) {
 	[[raster representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:[directory stringByAppendingPathComponent:[@"cached-" stringByAppendingString:name]] atomically:YES];
 }
 
+
+static void RunAeonSnippetTest(NSString* path) {
+	[DocumentWindowController disableSessionSave];
+	OakDocument* doc = [OakDocumentController.sharedInstance documentWithPath:path];
+	doc.recentTrackingDisabled = YES; doc.keepBackupFile = NO;
+	[OakDocumentController.sharedInstance showDocument:doc andSelect:text::pos_t::undefined inProject:nil bringToFront:YES];
+	NSArray* triggers = @[@"def", @"val", @"inductive", @"indp", @"match", @"let", @"if", @"fun", @"ref", @"open", @"import"];
+	NSArray* expected = @[@"def name (x : Int) : Int :=\tx;\n", @"def name : Int := 0;\n", @"inductive Nat\n| zero : Nat\n| succ (n : Nat) : Nat\n", @"inductive Maybe a\n| none : (Maybe a)\n| some (value : a) : (Maybe a)\n", @"match value with\n| none => 0\n| some x => x", @"let x := 0 in\nx", @"if true then\n\t0\nelse\n\t1", @"fun x => x", @"{v : Int | v >= 0}", @"open Math\n", @"import Math;\n"];
+	NSMutableDictionary* expanded = [NSMutableDictionary dictionary];
+	__block NSString* original;
+	__block NSUInteger index = 0, ticks = 0;
+	__block BOOL waiting = NO;
+	[NSTimer scheduledTimerWithTimeInterval:0.25 repeats:YES block:^(NSTimer* timer) {
+		OakDocumentView* view = [[DocumentWindowController controllerForDocument:doc] valueForKey:@"documentView"];
+		if(++ticks > 160) { fprintf(stderr,"AEON SNIPPETS: FAIL timeout\n"); [timer invalidate]; return; }
+		if(!view) return;
+		if(!original) original = doc.content;
+		if(!waiting) {
+			[view.textView selectAll:nil]; [view.textView insertText:triggers[index]];
+			auto items = bundles::query(bundles::kFieldTabTrigger, [triggers[index] UTF8String], [view.textView scopeContext]);
+			if(items.size() != 1) { fprintf(stderr,"AEON SNIPPETS: FAIL trigger lookup %s\n",[triggers[index] UTF8String]); [timer invalidate]; return; }
+			[view.textView insertTab:nil]; waiting = YES;
+			return;
+		}
+		auto tokens = [](NSString* text) {
+			return [[text componentsSeparatedByCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet] filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"length > 0"]];
+		};
+		if(![tokens(doc.content) isEqual:tokens(expected[index])]) {
+			fprintf(stderr,"AEON SNIPPETS: FAIL expansion %s: %s\n",[triggers[index] UTF8String],doc.content.UTF8String); [timer invalidate]; return;
+		}
+		expanded[triggers[index]] = doc.content;
+		if([triggers[index] isEqual:@"inductive"]) {
+			[view.textView insertText:@"Natural"];
+			if([doc.content containsString:@"Nat\n"] || ![doc.content containsString:@"inductive Natural"] || ![doc.content containsString:@": Natural"]) {
+				fprintf(stderr,"AEON SNIPPETS: FAIL linked type placeholders\n"); [timer invalidate]; return;
+			}
+		}
+		// Leave snippet mode before testing the next trigger.
+		for(NSUInteger tab = 0; tab < 12; ++tab) [view.textView insertTab:nil];
+		waiting = NO;
+		if(++index < triggers.count) return;
+		NSString* directory = [NSUserDefaults.standardUserDefaults stringForKey:@"LSPPrototypeArtifacts"];
+		NSData* json = [NSJSONSerialization dataWithJSONObject:expanded options:NSJSONWritingPrettyPrinted error:nil];
+		BOOL written = [json writeToFile:[directory stringByAppendingPathComponent:@"aeon-snippets.json"] atomically:YES];
+		[view.textView selectAll:nil]; [view.textView insertText:original]; [doc markDocumentSaved];
+		fprintf(stderr,"AEON SNIPPETS: %s 11 native Tab expansions and linked placeholders; fixture restored\n",written ? "PASS" : "FAIL artifact write");
+		[timer invalidate];
+	}];
+}
+
+
+static void RunAeonCommentTest(NSString* path) {
+	[DocumentWindowController disableSessionSave];
+	OakDocument* doc = [OakDocumentController.sharedInstance documentWithPath:path];
+	doc.recentTrackingDisabled = YES; doc.keepBackupFile = NO;
+	[OakDocumentController.sharedInstance showDocument:doc andSelect:text::pos_t::undefined inProject:nil bringToFront:YES];
+	__block NSUInteger stage = 0, ticks = 0;
+	__block NSString* original;
+	NSString* source = @"    def greeting : String := \"Olá 🌍\";\n    def answer : Int := 42;\n";
+	NSString* commented = @"    # def greeting : String := \"Olá 🌍\";\n    # def answer : Int := 42;\n";
+	[NSTimer scheduledTimerWithTimeInterval:0.25 repeats:YES block:^(NSTimer* timer) {
+		OakDocumentView* view = [[DocumentWindowController controllerForDocument:doc] valueForKey:@"documentView"];
+		if(++ticks > 120) { fprintf(stderr,"AEON COMMENT: FAIL timeout stage %lu\n",stage); [timer invalidate]; return; }
+		if(!view) return;
+		auto toggle = [&]() {
+			auto actions = bundles::query(bundles::kFieldKeyEquivalent, "@/", [view.textView scopeContext]);
+			if(actions.size() != 1 || actions.front()->uuid() != oak::uuid_t("73EAE95D-A09C-4FC2-B4E3-42505678B57E")) {
+				fprintf(stderr,"AEON COMMENT: FAIL native Cmd-/ lookup\n"); [timer invalidate]; return;
+			}
+			[view.textView performBundleItem:actions.front()];
+		};
+		if(stage == 0) {
+			original = doc.content;
+			[view.textView selectAll:nil]; [view.textView insertText:source];
+			[view.textView selectAll:nil]; toggle(); stage = 1;
+		} else if(stage == 1 && [doc.content isEqual:commented]) {
+			[view.textView selectAll:nil]; toggle(); stage = 2;
+		} else if(stage == 2 && [doc.content isEqual:source]) {
+			view.textView.selectionString = @"2:8"; toggle(); stage = 3;
+		} else if(stage == 3 && [doc.content isEqual:@"    def greeting : String := \"Olá 🌍\";\n    # def answer : Int := 42;\n"]) {
+			view.textView.selectionString = @"2:10"; toggle(); stage = 4;
+		} else if(stage == 4 && [doc.content isEqual:source]) {
+			[view.textView selectAll:nil]; [view.textView insertText:original]; [doc markDocumentSaved];
+			fprintf(stderr,"AEON COMMENT: PASS native Cmd-/ command, selected lines and current line, comment/uncomment, indentation and Unicode; fixture restored\n");
+			[timer invalidate];
+		}
+	}];
+}
 
 static void RunAeonFormatBundleTest(NSString* path) {
 	[DocumentWindowController disableSessionSave];
@@ -616,6 +755,8 @@ static void RunSymbolTest(NSString* path) {
 }
 
 void RunLSPPrototypeTest(NSString* path) {
+	if([NSUserDefaults.standardUserDefaults boolForKey:@"LSPAeonSnippetTest"]) { RunAeonSnippetTest(path); return; }
+	if([NSUserDefaults.standardUserDefaults boolForKey:@"LSPAeonCommentTest"]) { RunAeonCommentTest(path); return; }
 	if([NSUserDefaults.standardUserDefaults boolForKey:@"LSPAeonHighlightTest"]) {
 		[DocumentWindowController disableSessionSave];
 		auto item = bundles::lookup(oak::uuid_t("DE924C99-967E-4820-B5AD-F2C648C1C572"));
@@ -811,10 +952,11 @@ void RunLSPPrototypeTest(NSString* path) {
 			original = doc.content;
 			[view startLSP]; stage = 1;
 		} else if(stage == 1 && view.lspPanel.diagnostics.count >= 2) {
+			if(!TestDiagnosticRows(view)) { [timer invalidate]; return; }
 			if(view.textView.lspDiagnostics.count != view.lspPanel.diagnostics.count || ![[view.textView valueForKey:@"diagnosticByteRanges"] count]) { fprintf(stderr,"LSP UI TEST: FAIL missing inline ranges\n"); [timer invalidate]; return; }
 			NSDictionary* first = view.lspPanel.diagnostics.firstObject;
 			[view.lspPanel selectDiagnosticAtLine:9];
-			if(![view.textView.selectionString isEqualToString:@"10:44-10:60"]) {
+			if(![view.textView.selectionString isEqualToString:@"10:44"]) {
 				fprintf(stderr, "LSP UI TEST: FAIL Unicode navigation: %s\n", view.textView.selectionString.UTF8String); [timer invalidate]; return;
 			}
 			fprintf(stderr, "LSP UI TEST: UTF-16 to UTF-8 navigation passed\n");

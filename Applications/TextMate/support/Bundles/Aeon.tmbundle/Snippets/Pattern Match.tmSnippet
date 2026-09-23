@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>name</key><string>Pattern Match</string>
+	<key>scope</key><string>source.aeon - comment - string</string>
+	<key>tabTrigger</key><string>match</string>
+	<key>content</key><string>match ${1:value} with
+| ${2:none} =&gt; ${3:0}
+| ${4:some} ${5:x} =&gt; ${6:$5}$0</string>
+	<key>uuid</key><string>E9D56293-A2BC-4D31-80F7-000000000005</string>
+</dict>
+</plist>

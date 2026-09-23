@@ -9,10 +9,14 @@ not a mock data source. The installed TextMate application is not replaced.
 - The existing editor and status bar remain intact. Problems occupies an
   auxiliary bottom panel and collapses to a 38-point summary bar.
 - The original line-number, bookmark and folding columns are unchanged. There
-  is no extra LSP gutter column. Click a table row to reveal the exact range;
+  is no extra LSP gutter column. Click a table row to place the caret at the
+  diagnostic's start and focus the editor, including clicks on an already
+  selected row;
   arrows in the header move between rows.
-  The native table supports keyboard selection. Full messages are in tooltips
-  and the selected-message footer; severity also has an accessibility label.
+  The native table supports keyboard selection without losing keyboard focus.
+  Rows and the selected-message footer replace newline characters with spaces.
+  Hover anywhere on a row to see the full, original multiline message in a
+  tooltip; severity also has an accessibility label.
 - Starting, checking, clean, stopped and failure states are explicit. A failed
   server offers Restart rather than presenting an empty list as success.
 - Edits immediately invalidate old results; only diagnostics with the current
@@ -76,6 +80,7 @@ prototype open. It does not run on a normal launch. Watch stderr for
 `LSP UI TEST: PASS` or a failure/timeout. Captures are ignored by git.
 
 The checks cover real errors, navigation after an emoji (UTF-16 vs UTF-8),
+single-line messages with multiline tooltips, repeated-click navigation and focus,
 clearing diagnostics after edits, collapsing, stopping/restarting, warnings and
 missing-executable recovery. The latter changes only the process's volatile
 argument domain, not saved user preferences. Captures use AppKit's print

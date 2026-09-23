@@ -15,7 +15,20 @@ requires the Python bundle. Colors depend on the active TextMate theme.
 License and provenance ship inside `Aeon.tmbundle` as `LICENSE-vscode-aeon.txt`
 and `SYNTAX-SOURCE.md`; the grammar also contains a modification notice.
 
-## Tests
+## Commenting
+
+Use **⌘/** (Bundles → Source → Comment Line / Selection) to toggle `# `
+comments on selected lines, or the current line when nothing is selected.
+The Aeon bundle provides `source.aeon` comment preferences; the existing Source
+bundle command handles indentation, selection, and uncommenting, just as for
+Python. No language server is needed.
+
+Run the native regression test with `-LSPAeonCommentTest YES
+-LSPPrototypeTestPath <absolute path to an .ae fixture>`. It checks the standard
+shortcut command on selected lines and the current line, both directions,
+including indentation and Unicode, then restores the fixture without saving.
+
+## Syntax tests
 
 `python3 Prototype/test_aeon_grammar.py /path/to/vscode-aeon/syntaxes/aeon.json`
 verifies lossless conversion and identity metadata.

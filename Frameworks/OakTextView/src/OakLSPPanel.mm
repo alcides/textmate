@@ -1,5 +1,9 @@
 #import "OakLSPPanel.h"
 
+static NSString* SingleLineDiagnosticMessage(NSString* message) {
+	return [[message componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet] componentsJoinedByString:@" "];
+}
+
 @implementation OakLSPPanel {
 	NSButton *_disclosure, *_server, *_previous, *_next, *_actions;
 	NSUInteger _actionGeneration;
@@ -39,6 +43,7 @@
 		_table.usesAlternatingRowBackgroundColors = YES;
 		_table.style = NSTableViewStyleFullWidth;
 		_table.dataSource = self; _table.delegate = self;
+		_table.target = self; _table.action = @selector(clickedDiagnostic:);
 		_table.accessibilityLabel = @"Problems in current file";
 		NSTableColumn* message = [[NSTableColumn alloc] initWithIdentifier:@"message"];
 		message.resizingMask = NSTableColumnAutoresizingMask; message.width = 600;
@@ -124,7 +129,7 @@
 		label.alignment = NSTextAlignmentLeft;
 		int severity = [d[@"severity"] intValue];
 		NSString* kind = severity==1 ? @"Error" : severity==2 ? @"Warning" : @"Note";
-		label.stringValue = [NSString stringWithFormat:@"%@  %@", severity==1 ? @"●" : severity==2 ? @"▲" : @"●", d[@"message"]];
+		label.stringValue = [NSString stringWithFormat:@"%@  %@", severity==1 ? @"●" : severity==2 ? @"▲" : @"●", SingleLineDiagnosticMessage(d[@"message"])];
 		label.accessibilityLabel = [NSString stringWithFormat:@"%@: %@", kind, d[@"message"]];
 		NSMutableAttributedString* title = [[NSMutableAttributedString alloc] initWithString:label.stringValue];
 		NSMutableParagraphStyle* paragraph = [[NSMutableParagraphStyle alloc] init];
@@ -136,9 +141,19 @@
 	}
 	label.toolTip = d[@"message"];
 	NSView* cell = [[NSView alloc] initWithFrame:NSZeroRect];
+	cell.toolTip = d[@"message"];
 	label.translatesAutoresizingMaskIntoConstraints = NO; [cell addSubview:label];
 	[NSLayoutConstraint activateConstraints:@[[label.leadingAnchor constraintEqualToAnchor:cell.leadingAnchor constant:14], [label.trailingAnchor constraintEqualToAnchor:cell.trailingAnchor constant:-12], [label.centerYAnchor constraintEqualToAnchor:cell.centerYAnchor]]];
 	return cell;
+}
+- (NSTableRowView*)tableView:(NSTableView*)table rowViewForRow:(NSInteger)row {
+	NSTableRowView* view = [NSTableRowView new];
+	view.toolTip = _diagnostics[row][@"message"];
+	return view;
+}
+- (void)clickedDiagnostic:(NSTableView*)table {
+	NSInteger row = table.clickedRow;
+	if(row >= 0 && row < (NSInteger)_diagnostics.count && self.navigate) self.navigate(_diagnostics[row], YES);
 }
 - (void)tableViewSelectionDidChange:(NSNotification*)notification {
 	++_actionGeneration;
@@ -147,9 +162,9 @@
 	_actions.enabled = row >= 0 && row < (NSInteger)_diagnostics.count;
 	if(row < 0 || row >= (NSInteger)_diagnostics.count) return;
 	NSDictionary* d = _diagnostics[row];
-	_detail.stringValue = [NSString stringWithFormat:@"%@ · %@", d[@"source"], d[@"message"]];
-	_detail.toolTip = _detail.stringValue;
-	if(self.navigate) self.navigate(d);
+	_detail.stringValue = [NSString stringWithFormat:@"%@ · %@", d[@"source"] ?: @"", SingleLineDiagnosticMessage(d[@"message"])];
+	_detail.toolTip = d[@"message"];
+	if(self.navigate) self.navigate(d, NO);
 }
 - (void)selectRow:(NSInteger)row {
 	if(!_diagnostics.count) return;

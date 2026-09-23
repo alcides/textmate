@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>name</key><string>Lambda</string>
+	<key>scope</key><string>source.aeon - comment - string</string>
+	<key>tabTrigger</key><string>fun</string>
+	<key>content</key><string>fun ${1:x} =&gt; ${2:$1}$0</string>
+	<key>uuid</key><string>E9D56293-A2BC-4D31-80F7-000000000008</string>
+</dict>
+</plist>
