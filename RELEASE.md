@@ -52,5 +52,7 @@ in-app updater. macOS 14 is the deployment target, not a claim of runtime tests
 on every supported OS release.
 
 For server setup use `LSPClangdPath` or the active Xcode's `xcrun --find clangd`,
-`LSPAeonPath` for the Aeon server, and `TM_AEON` for the Aeon bundle's Cmd-R command.
+`LSPAeonPath` for a specific Aeon server, or leave it unset for
+[automatic uv setup](Prototype/AEON-SETUP.md). `TM_AEON` overrides Cmd-R; otherwise
+the bundle reuses the managed installation when available.
 See [Prototype/AEON-RUN.md](Prototype/AEON-RUN.md) and the other prototype guides.

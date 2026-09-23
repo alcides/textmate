@@ -7,7 +7,8 @@ Experimental TextMate fork with LSP support and an Aeon Cmd-R bundle.
   block first launch; inspect the source/checksum before choosing Open Anyway in
   System Settings → Privacy & Security. Do not disable Gatekeeper globally.
 - Language servers/interpreters are not bundled. Install Xcode/clangd or configure
-  `LSPClangdPath`; configure `LSPAeonPath` for the Aeon server and `TM_AEON` for Cmd-R.
+  `LSPClangdPath`. With uv installed, Start Aeon can download/setup `aeonlang`
+  automatically. `LSPAeonPath` and `TM_AEON` remain explicit overrides.
 - This is not an official MacroMates release. Do not use the upstream in-app
   updater for this fork; obtain fork updates from this repository's Releases.
 

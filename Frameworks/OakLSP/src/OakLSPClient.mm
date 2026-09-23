@@ -11,7 +11,63 @@
 #include <deque>
 #include <functional>
 
+NSString* OakLSPFindUV(void) {
+	NSMutableArray<NSString*>* candidates = [NSMutableArray arrayWithArray:@[[NSHomeDirectory() stringByAppendingPathComponent:@".local/bin/uv"], @"/opt/homebrew/bin/uv", @"/usr/local/bin/uv"]];
+	for(NSString* directory in [NSProcessInfo.processInfo.environment[@"PATH"] componentsSeparatedByString:@":"])
+		if(directory.isAbsolutePath) [candidates addObject:[directory stringByAppendingPathComponent:@"uv"]];
+	for(NSString* candidate in candidates) {
+		BOOL directory = NO;
+		if([NSFileManager.defaultManager fileExistsAtPath:candidate isDirectory:&directory] && !directory && [NSFileManager.defaultManager isExecutableFileAtPath:candidate]) return candidate;
+	}
+	return nil;
+}
+
 namespace {
+// Serialize setup across documents, and resolve latest only once per app launch.
+std::mutex aeonSetupMutex;
+NSString* preparedAeon = nil;
+
+NSString* PrepareAeon(std::atomic<bool> const& stopping, void (^status)(NSString*)) {
+	std::unique_lock lock(aeonSetupMutex, std::defer_lock);
+	while(!lock.try_lock()) {
+		if(stopping) throw std::runtime_error("Aeon setup cancelled");
+		std::this_thread::sleep_for(std::chrono::milliseconds(100));
+	}
+	if(stopping) throw std::runtime_error("Aeon setup cancelled");
+	if(preparedAeon && [NSFileManager.defaultManager isExecutableFileAtPath:preparedAeon]) return preparedAeon;
+	NSString* uv = OakLSPFindUV();
+	if(!uv) throw std::runtime_error("uv was not found. Install uv in ~/.local/bin, /opt/homebrew/bin or /usr/local/bin, or set LSPAeonPath.");
+	NSString* root = [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Application Support/TextMate/LSP/Aeon"];
+	NSString* bins = [root stringByAppendingPathComponent:@"bin"];
+	status(@"Installing/updating Aeon via uv… · Stop cancels setup");
+	// env passes arguments without a shell and isolates the tools from global uv installs.
+	auto installer = lsp::Process::start("/usr/bin/env", {
+		std::string("UV_TOOL_DIR=") + [root stringByAppendingPathComponent:@"tools"].UTF8String,
+		std::string("UV_TOOL_BIN_DIR=") + bins.UTF8String,
+		uv.UTF8String, "tool", "install", "--no-config", "--upgrade", "--python", "3.12", "--no-build-package", "llvmlite", "aeonlang"
+	});
+	auto deadline = std::chrono::steady_clock::now() + std::chrono::minutes(5);
+	std::string details;
+	while(installer.isRunning()) {
+		details += installer.readAvailableStdErr();
+		if(details.size() > 4096) details.erase(0, details.size()-4096);
+		if(stopping || std::chrono::steady_clock::now() > deadline) {
+			kill(installer.id(), SIGKILL); (void)installer.wait();
+			throw std::runtime_error(stopping ? "Aeon setup cancelled" : "Aeon installation timed out. Check your network and retry Start.");
+		}
+		std::this_thread::sleep_for(std::chrono::milliseconds(100));
+	}
+	details += installer.readAvailableStdErr();
+	if(installer.wait() != 0) {
+		NSString* message = [[NSString alloc] initWithBytes:details.data() length:details.size() encoding:NSUTF8StringEncoding] ?: @"Check network access and uv configuration.";
+		throw std::runtime_error(std::string("uv could not install aeonlang: ") + message.UTF8String);
+	}
+	NSString* executable = [bins stringByAppendingPathComponent:@"aeon"];
+	if(![NSFileManager.defaultManager isExecutableFileAtPath:executable]) throw std::runtime_error("uv completed, but the Aeon executable is missing. Set LSPAeonPath or retry setup.");
+	preparedAeon = executable;
+	return executable;
+}
+
 template <typename T> NSDictionary* CocoaJSON(T const& value) {
 	std::string encoded;
 	{ lsp::json::Writer writer(encoded); auto object = writer.beginObject(); lsp::writeJson(value, object); }
@@ -52,6 +108,11 @@ struct Session {
 		try {
 			NSString* configured = [NSUserDefaults.standardUserDefaults stringForKey:aeon ? @"LSPAeonPath" : @"LSPClangdPath"];
 			NSString* executable = configured ?: @"";
+			if(aeon && !configured.length) {
+				if(![NSUserDefaults.standardUserDefaults boolForKey:@"LSPAllowAeonUV"]) throw std::runtime_error("Allow Aeon installation via uv, or set LSPAeonPath.");
+				executable = PrepareAeon(stopping, ^(NSString* state) { std::lock_guard lock(mutex); report(state, @[], version); });
+				if(stopping) throw std::runtime_error("Aeon setup cancelled");
+			}
 			if(!configured && !aeon) {
 				NSTask* lookup = [NSTask new]; lookup.executableURL = [NSURL fileURLWithPath:@"/usr/bin/xcrun"];
 				lookup.arguments = @[@"--find", @"clangd"];

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>name</key><string>Format Document</string>
+<key>uuid</key><string>B19FB1FA-4893-48CB-9A10-3D0881FE0463</string>
+<key>scope</key><string>source.aeon</string>
+<key>keyEquivalent</key><string>~F</string>
+<key>semanticClass</key><string>source.format.aeon</string>
+<key>beforeRunningCommand</key><string>nop</string>
+<key>input</key><string>document</string>
+<key>outputLocation</key><string>replaceDocument</string>
+<key>outputFormat</key><string>text</string>
+<key>outputCaret</key><string>interpolateByLine</string>
+<key>version</key><integer>2</integer>
+<key>command</key><string>#!/usr/bin/env ruby18
+load File.join(ENV['TM_BUNDLE_SUPPORT'], 'format.rb')
+</string>
+</dict></plist>

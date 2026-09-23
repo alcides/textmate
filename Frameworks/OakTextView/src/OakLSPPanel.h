@@ -2,7 +2,6 @@
 
 @interface OakLSPPanel : NSView <NSTableViewDataSource, NSTableViewDelegate>
 @property (nonatomic, copy) void (^toggleServer)(void);
-@property (nonatomic, copy) void (^formatDocument)(void);
 @property (nonatomic) BOOL formattingEnabled;
 @property (nonatomic) BOOL formattingBusy;
 @property (nonatomic, copy) void (^navigate)(NSDictionary* diagnostic);

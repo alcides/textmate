@@ -1,7 +1,7 @@
 #import "OakLSPPanel.h"
 
 @implementation OakLSPPanel {
-	NSButton *_disclosure, *_server, *_previous, *_next, *_actions, *_format;
+	NSButton *_disclosure, *_server, *_previous, *_next, *_actions;
 	NSUInteger _actionGeneration;
 	NSTextField *_status, *_empty, *_detail;
 	NSTableView* _table;
@@ -24,15 +24,13 @@
 		_actions.bezelStyle = NSBezelStyleRounded;
 		_actions.controlSize = NSControlSizeSmall;
 		_actions.toolTip = @"Code actions for the selected problem";
-		_format = [NSButton buttonWithTitle:@"Format" target:self action:@selector(formatDocumentAction:)];
-		_format.bezelStyle = NSBezelStyleRounded; _format.controlSize = NSControlSizeSmall;
-		_format.toolTip = @"Format Document (⌥⇧F)"; _format.enabled = NO;
 		_previous = [NSButton buttonWithImage:[NSImage imageWithSystemSymbolName:@"chevron.up" accessibilityDescription:@"Previous problem"] target:self action:@selector(previous:)];
 		_next = [NSButton buttonWithImage:[NSImage imageWithSystemSymbolName:@"chevron.down" accessibilityDescription:@"Next problem"] target:self action:@selector(next:)];
 		_previous.bordered = _next.bordered = NO;
 		_previous.toolTip = @"Previous problem"; _next.toolTip = @"Next problem";
 		_status = [NSTextField labelWithString:@""];
 		_status.font = [NSFont systemFontOfSize:11];
+		_status.alignment = NSTextAlignmentLeft;
 		_status.textColor = NSColor.secondaryLabelColor;
 		_status.lineBreakMode = NSLineBreakByTruncatingTail;
 		[_status setContentCompressionResistancePriority:250 forOrientation:NSLayoutConstraintOrientationHorizontal];
@@ -52,11 +50,12 @@
 		_scroll = [[NSScrollView alloc] initWithFrame:NSZeroRect];
 		_scroll.documentView = _table; _scroll.hasVerticalScroller = YES; _scroll.autohidesScrollers = YES;
 		_empty = [NSTextField wrappingLabelWithString:@""];
-		_empty.textColor = NSColor.secondaryLabelColor; _empty.alignment = NSTextAlignmentCenter;
+		_empty.textColor = NSColor.secondaryLabelColor; _empty.alignment = NSTextAlignmentLeft;
 		_detail = [NSTextField labelWithString:@"Select a problem to reveal it in the editor."];
 		_detail.font = [NSFont systemFontOfSize:11]; _detail.textColor = NSColor.secondaryLabelColor;
+		_detail.alignment = NSTextAlignmentLeft;
 		_detail.lineBreakMode = NSLineBreakByTruncatingTail;
-		for(NSView* v in @[_disclosure, _status, _previous, _next, _server, _scroll, _empty, _detail, _actions, _format]) {
+		for(NSView* v in @[_disclosure, _status, _previous, _next, _server, _scroll, _empty, _detail, _actions]) {
 			v.translatesAutoresizingMaskIntoConstraints = NO; [self addSubview:v];
 		}
 		_height = [self.heightAnchor constraintEqualToConstant:38];
@@ -66,11 +65,10 @@
 			[_previous.leadingAnchor constraintGreaterThanOrEqualToAnchor:_status.trailingAnchor constant:8], [_previous.centerYAnchor constraintEqualToAnchor:_disclosure.centerYAnchor], [_previous.widthAnchor constraintEqualToConstant:22],
 			[_next.leadingAnchor constraintEqualToAnchor:_previous.trailingAnchor constant:4], [_next.centerYAnchor constraintEqualToAnchor:_disclosure.centerYAnchor], [_next.widthAnchor constraintEqualToConstant:22],
 			[_actions.leadingAnchor constraintEqualToAnchor:_next.trailingAnchor constant:8], [_actions.centerYAnchor constraintEqualToAnchor:_disclosure.centerYAnchor],
-			[_format.leadingAnchor constraintEqualToAnchor:_actions.trailingAnchor constant:8], [_format.centerYAnchor constraintEqualToAnchor:_disclosure.centerYAnchor],
-			[_server.leadingAnchor constraintEqualToAnchor:_format.trailingAnchor constant:8], [_server.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-12], [_server.centerYAnchor constraintEqualToAnchor:_disclosure.centerYAnchor],
+			[_server.leadingAnchor constraintEqualToAnchor:_actions.trailingAnchor constant:8], [_server.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-12], [_server.centerYAnchor constraintEqualToAnchor:_disclosure.centerYAnchor],
 			[_scroll.leadingAnchor constraintEqualToAnchor:self.leadingAnchor], [_scroll.trailingAnchor constraintEqualToAnchor:self.trailingAnchor], [_scroll.topAnchor constraintEqualToAnchor:self.topAnchor constant:38], [_scroll.heightAnchor constraintEqualToConstant:132],
-			[_empty.centerXAnchor constraintEqualToAnchor:_scroll.centerXAnchor], [_empty.centerYAnchor constraintEqualToAnchor:_scroll.centerYAnchor],
-			[_empty.leadingAnchor constraintGreaterThanOrEqualToAnchor:self.leadingAnchor constant:24], [_empty.trailingAnchor constraintLessThanOrEqualToAnchor:self.trailingAnchor constant:-24],
+			[_empty.centerYAnchor constraintEqualToAnchor:_scroll.centerYAnchor],
+			[_empty.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:14], [_empty.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-14],
 			[_detail.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:14], [_detail.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-14], [_detail.topAnchor constraintEqualToAnchor:_scroll.bottomAnchor constant:8]]];
 		self.expanded = NO;
 		[self showState:@"Start clangd to check this file" diagnostics:@[] running:NO];
@@ -93,9 +91,6 @@
 }
 - (void)toggleExpanded:(id)sender { self.expanded = !self.expanded; }
 - (void)toggleServerAction:(id)sender { if(self.toggleServer) self.toggleServer(); }
-- (void)formatDocumentAction:(id)sender { if(self.formattingEnabled && !self.formattingBusy && self.formatDocument) self.formatDocument(); }
-- (void)setFormattingEnabled:(BOOL)enabled { _formattingEnabled = enabled; _format.enabled = enabled && !self.formattingBusy; }
-- (void)setFormattingBusy:(BOOL)busy { _formattingBusy = busy; _format.title = busy ? @"Formatting…" : @"Format"; _format.enabled = self.formattingEnabled && !busy; }
 - (void)showState:(NSString*)state diagnostics:(NSArray*)diagnostics running:(BOOL)running {
 	++_actionGeneration; _actions.enabled = NO; _actions.title = @"Quick Fix…";
 	_diagnostics = [diagnostics copy];
@@ -126,11 +121,16 @@
 		label.stringValue = [NSString stringWithFormat:@"%ld:%ld", [d[@"line"] integerValue]+1, [d[@"column"] integerValue]+1];
 		label.textColor = NSColor.secondaryLabelColor; label.alignment = NSTextAlignmentRight;
 	} else {
+		label.alignment = NSTextAlignmentLeft;
 		int severity = [d[@"severity"] intValue];
 		NSString* kind = severity==1 ? @"Error" : severity==2 ? @"Warning" : @"Note";
 		label.stringValue = [NSString stringWithFormat:@"%@  %@", severity==1 ? @"●" : severity==2 ? @"▲" : @"●", d[@"message"]];
 		label.accessibilityLabel = [NSString stringWithFormat:@"%@: %@", kind, d[@"message"]];
 		NSMutableAttributedString* title = [[NSMutableAttributedString alloc] initWithString:label.stringValue];
+		NSMutableParagraphStyle* paragraph = [[NSMutableParagraphStyle alloc] init];
+		paragraph.alignment = NSTextAlignmentLeft;
+		paragraph.lineBreakMode = NSLineBreakByTruncatingTail;
+		[title addAttribute:NSParagraphStyleAttributeName value:paragraph range:NSMakeRange(0, title.length)];
 		[title addAttribute:NSForegroundColorAttributeName value:severity==1 ? NSColor.systemRedColor : severity==2 ? NSColor.systemOrangeColor : NSColor.systemBlueColor range:NSMakeRange(0, 1)];
 		label.attributedStringValue = title;
 	}

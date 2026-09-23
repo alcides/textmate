@@ -37,6 +37,47 @@ static void CapturePrototype(NSWindow* window, NSString* name) {
 }
 
 
+static void RunAeonFormatBundleTest(NSString* path) {
+	[DocumentWindowController disableSessionSave];
+	OakDocument* doc = [OakDocumentController.sharedInstance documentWithPath:path];
+	doc.recentTrackingDisabled = YES; doc.keepBackupFile = NO;
+	[OakDocumentController.sharedInstance showDocument:doc andSelect:text::pos_t::undefined inProject:nil bringToFront:YES];
+	__block NSUInteger ticks = 0;
+	__block BOOL invoked = NO;
+	__block NSString* original;
+	[NSTimer scheduledTimerWithTimeInterval:0.25 repeats:YES block:^(NSTimer* timer) {
+		DocumentWindowController* controller = [DocumentWindowController controllerForDocument:doc];
+		OakDocumentView* view = [controller valueForKey:@"documentView"];
+		auto fail = [&](NSString* reason) { fprintf(stderr,"AEON FORMAT: FAIL %s\n",reason.UTF8String); [timer invalidate]; };
+		if(++ticks > 240) { fail(@"timeout"); return; }
+		if(!view) return;
+		if(!invoked) {
+			auto actions = bundles::query(bundles::kFieldKeyEquivalent, "~F", [view.textView scopeContext]);
+			if(actions.size() != 1 || actions.front()->uuid() != oak::uuid_t("B19FB1FA-4893-48CB-9A10-3D0881FE0463")) { fail(@"bundle shortcut lookup"); return; }
+			if([[NSApp.mainMenu itemWithTitle:@"Text"].submenu itemWithTitle:@"Format Document"]) { fail(@"global menu still present"); return; }
+			// Exercise unsaved content, not the original disk file.
+			[view.textView selectAll:nil]; [view.textView insertText:@"def main(args:Int):Unit := print \"Olá 🌍\"\n"];
+			original = doc.content;
+			[view.window makeFirstResponder:view.textView];
+			// Dispatch the shortcut's resolved bundle item without requiring global focus.
+			[view.textView performBundleItem:actions.front()];
+			invoked = YES;
+			fprintf(stderr,"AEON FORMAT: bundle dispatched\n");
+		} else if(![doc.content isEqual:original]) {
+			if(![doc.content containsString:@"Olá 🌍"] || ![doc.content containsString:@"args : Int"]) { fail(@"formatted buffer or Unicode"); return; }
+			[view.lspPanel showState:@"Failed · Example multiline error\nDetails stay left-aligned." diagnostics:@[] running:NO];
+			view.lspPanel.expanded = YES;
+			NSTextField* message = [view.lspPanel valueForKey:@"empty"];
+			if(message.alignment != NSTextAlignmentLeft) { fail(@"message alignment"); return; }
+			CapturePrototype(controller.window,@"aeon-format-bundle.png");
+			[view.textView tryToPerform:@selector(undo:) with:nil];
+			if(![doc.content isEqual:original]) { fail(@"single undo"); return; }
+			fprintf(stderr,"AEON FORMAT: PASS shortcut lookup, native bundle dispatch, unsaved buffer, Unicode, single Undo, left-aligned errors; no global Format menu\n");
+			[timer invalidate];
+		}
+	}];
+}
+
 static void RunAeonBundleTest(NSString* path) {
 	[DocumentWindowController disableSessionSave];
 	OakDocument* doc = [OakDocumentController.sharedInstance documentWithPath:path];
@@ -437,8 +478,8 @@ static void RunFormattingTest(NSString* path) {
 		if(stage == 0) { original = doc.content; [view startLSP]; stage = 1; }
 		else if(stage == 1 && view.lspPanel.formattingEnabled) {
 			CapturePrototype(controller.window,@"format-before.png");
-			[(NSButton*)[view.lspPanel valueForKey:@"format"] performClick:nil];
-			if(!view.lspPanel.formattingBusy && [doc.content isEqual:original]) { fail(@"button did not request formatting"); return; }
+			[view formatDocument:nil];
+			if(!view.lspPanel.formattingBusy && [doc.content isEqual:original]) { fail(@"format request not dispatched"); return; }
 			stage = 2;
 		} else if(stage == 2 && !view.lspPanel.formattingBusy) {
 			formatted = doc.content;
@@ -447,10 +488,9 @@ static void RunFormattingTest(NSString* path) {
 			[view.textView tryToPerform:@selector(undo:) with:nil];
 			if(![doc.content isEqual:original]) { fail(@"single Undo"); return; }
 			[controller.window makeFirstResponder:view.textView];
-			NSEvent* key = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:NSEventModifierFlagOption|NSEventModifierFlagShift timestamp:0 windowNumber:controller.window.windowNumber context:nil characters:@"F" charactersIgnoringModifiers:@"F" isARepeat:NO keyCode:3];
 			NSMenuItem* item = [[NSApp.mainMenu itemWithTitle:@"Text"].submenu itemWithTitle:@"Format Document"];
-			fprintf(stderr,"FORMAT TEST: menu key=%s flags=%lu target=%s\n",item.keyEquivalent.UTF8String,item.keyEquivalentModifierMask,NSStringFromClass([[NSApp targetForAction:@selector(formatDocument:)] class]).UTF8String);
-			if(![NSApp.mainMenu performKeyEquivalent:key] || (!view.lspPanel.formattingBusy && ![doc.content isEqual:formatted])) { fail(@"menu shortcut routing"); return; }
+			if(item) { fail(@"formatting should belong to the Aeon bundle, not Text menu"); return; }
+			[view formatDocument:nil];
 			stage = 3;
 		} else if(stage == 3 && !view.lspPanel.formattingBusy) {
 			if(![doc.content isEqual:formatted]) { fail(@"shortcut did not format"); return; }
@@ -470,7 +510,7 @@ static void RunFormattingTest(NSString* path) {
 		} else if(stage == 7 && !view.lspPanel.formattingBusy) {
 			if(![doc.content isEqual:formatted]) { fail(@"final format"); return; }
 			CapturePrototype(controller.window,@"format-final.png");
-			fprintf(stderr,"FORMAT TEST: PASS clangd, button, menu shortcut, Unicode, single Undo, no-op, stale edits; formatted demo left unsaved\n");
+			fprintf(stderr,"FORMAT TEST: PASS core clangd formatting, Unicode, single Undo, no-op, stale edits; no global Format menu\n");
 			[timer invalidate];
 		}
 	}];
@@ -621,7 +661,9 @@ void RunLSPPrototypeTest(NSString* path) {
 		[NSTimer scheduledTimerWithTimeInterval:0.25 repeats:YES block:^(NSTimer* timer) {
 			DocumentWindowController* controller = [DocumentWindowController controllerForDocument:doc];
 			OakDocumentView* view = [controller valueForKey:@"documentView"];
-			if(++ticks > 240) { fprintf(stderr,"AEON NAV: FAIL timeout stage %ld status %s\n",stage,[(NSTextField*)[view.lspPanel valueForKey:@"status"] stringValue].UTF8String); [timer invalidate]; return; }
+			NSUInteger limit = [NSUserDefaults.standardUserDefaults boolForKey:@"LSPAeonUVTest"] ? 1440 : 240;
+			if(++ticks > limit) { fprintf(stderr,"AEON NAV: FAIL timeout stage %ld status %s\n",stage,[(NSTextField*)[view.lspPanel valueForKey:@"status"] stringValue].UTF8String); [timer invalidate]; return; }
+			if([NSUserDefaults.standardUserDefaults boolForKey:@"LSPAeonUVTest"] && ticks % 20 == 0) fprintf(stderr,"AEON UV: %s\n",[(NSTextField*)[view.lspPanel valueForKey:@"status"] stringValue].UTF8String);
 			if(!view.lspPanel) return;
 			if(stage == 0) { [view startLSP]; stage = 1; }
 			else if(stage == 1 && [[(NSTextField*)[view.lspPanel valueForKey:@"status"] stringValue] hasPrefix:@"0 errors"]) {
@@ -650,6 +692,7 @@ void RunLSPPrototypeTest(NSString* path) {
 	}
 	if([NSUserDefaults.standardUserDefaults boolForKey:@"LSPSymbolTest"]) { RunSymbolTest(path); return; }
 	if([NSUserDefaults.standardUserDefaults boolForKey:@"LSPAeonBundleTest"]) { RunAeonBundleTest(path); return; }
+	if([NSUserDefaults.standardUserDefaults boolForKey:@"LSPAeonFormatBundleTest"]) { RunAeonFormatBundleTest(path); return; }
 	if([NSUserDefaults.standardUserDefaults boolForKey:@"LSPFormattingTest"]) { RunFormattingTest(path); return; }
 	if([NSUserDefaults.standardUserDefaults boolForKey:@"LSPHoverTest"]) { RunHoverTest(path); return; }
 	if([NSUserDefaults.standardUserDefaults boolForKey:@"LSPCompletionTest"]) { RunCompletionTest(path); return; }

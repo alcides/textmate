@@ -1,11 +1,30 @@
-# LSP document formatting
+# Aeon bundle formatting
 
-Start the language server, then use **Format** in the bottom Problems bar,
-**Text → Format Document**, or **Option–Shift–F** (⌥⇧F).
-The controls require the server's advertised document-formatting capability;
-they are disabled during a request. The button remains visible when Problems
-is collapsed. Existing paragraph reformatting and indentation commands remain
-unchanged.
+Use **Bundles → Aeon → Format Document**, or **Option–Shift–F** (⌥⇧F) in
+`source.aeon` files. Formatting is owned by the Aeon bundle: there is no Format
+button in the Problems bar or global Text → Format Document item. Existing
+paragraph reformatting and indentation commands remain unchanged.
+
+The bundle runs `aeon --format` on a temporary copy of the current buffer,
+including unsaved edits. It does not execute the program or save the document.
+It uses `TM_AEON`, the managed uv installation, or `aeon` on PATH, in that order,
+just like Run. Start Aeon first to install the managed tool if needed; the
+formatter itself does not install anything or require a running LSP server.
+Successful output replaces the document through TextMate's standard command
+infrastructure (with Undo). Failures and empty output become tooltips and do
+not replace code. Temporary files are cleaned up after the command.
+
+Run `ruby Prototype/test_aeon_format.rb` for real CLI formatting/error checks.
+Use `-LSPAeonFormatBundleTest YES` with `Prototype/run.ae` for shortcut lookup,
+native bundle dispatch, unsaved-buffer, Unicode, Undo and left-aligned error
+checks. These passed with AeonLang 4.8.2 on Intel macOS on 2026-09-23. The
+AppKit rendering was inspected; physical keyboard delivery is not covered by
+this background-safe test.
+
+## Retained generic LSP formatting API
+
+The internal LSP formatting implementation remains available and tested, but
+is no longer exposed by the global menu or bottom bar.
 
 Formatting requests use `textDocument/formatting` with the editor's tab size
 and soft-tabs preference. The server may apply its own project style settings
@@ -29,7 +48,7 @@ Native test arguments:
 -LSPPrototypeArtifacts /Users/alcides/Code/TextmateLSP/Prototype/artifacts
 ```
 
-The test uses real clangd and checks the button, menu key equivalent, Unicode
+The test uses real clangd and checks the internal request API, Unicode
 preservation, single Undo, no-op formatting, and rejection after intervening
 edits. It leaves the formatted demo open without saving to disk. Image
 artifacts are AppKit renderings, not full-screen captures.

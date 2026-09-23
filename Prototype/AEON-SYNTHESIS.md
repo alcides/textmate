@@ -14,8 +14,10 @@ The existing isolated Aeon checkout is at
 `/private/tmp/textmate-language-check.rzquY5/aeon`, revision
 `ef66bd95e6b7d2d5309453ee63640bc7fa1d988f`, with its virtual environment in
 `.venv`. This is a temporary development installation, not a bundled server.
-Pass `-LSPAeonPath /absolute/path/to/aeon` when launching TextMate; there is no
-automatic Aeon discovery. No Aeon server code was modified.
+Pass `-LSPAeonPath /absolute/path/to/aeon` to use a specific installation.
+When unset or empty, TextMate discovers uv and offers to install/update the
+latest `aeonlang` in an isolated managed directory; see [AEON-SETUP.md](AEON-SETUP.md).
+No Aeon server code was modified.
 
 For the opt-in native test, launch the built TextMate executable with:
 

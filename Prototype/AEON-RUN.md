@@ -19,7 +19,8 @@ or set it in a project `.tm_properties` file:
 TM_AEON = '/absolute/path/to/aeon'
 ```
 
-If unset, the command finds `aeon` on its PATH. Supply an executable path, not a
+If unset, the command first reuses Aeon installed by TextMate's
+[uv setup](AEON-SETUP.md), then falls back to `aeon` on PATH. Supply an executable path, not a
 shell command with flags. The bundle does not read the native LSP preference;
 `LSPAeonPath` and `TM_AEON` are independent settings. No development-machine path
 is hardcoded in the bundle.

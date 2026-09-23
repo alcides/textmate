@@ -10,9 +10,19 @@ make server configuration or command execution fully generic.
 
 [OakLSPClient.mm](/Users/alcides/Code/TextmateLSP/Frameworks/OakLSP/src/OakLSPClient.mm:30)
 stores `bool aeon`. `startWithPath:` selects it using `.ae`. Session startup
-uses the `LSPAeonPath` preference, requires an explicit executable, launches it
+uses the `LSPAeonPath` preference, or the uv bootstrap described below, launches it
 with `-lsp`, sends language ID `aeon`, and allows 30 seconds for initialization
 (versus 8 for clangd). These are hardcoded, not server-advertised configuration.
+
+`OakLSPFindUV` searches `~/.local/bin/uv`, `/opt/homebrew/bin/uv`, `/usr/local/bin/uv`
+and absolute PATH entries. `PrepareAeon` installs `aeonlang` with `uv tool install
+--upgrade --no-config --python 3.12 --no-build-package llvmlite` into
+`~/Library/Application Support/TextMate/LSP/Aeon`,
+using `UV_TOOL_DIR` and `UV_TOOL_BIN_DIR`. The package name, managed directories,
+five-minute setup timeout and once-per-app setup cache are Aeon-specific.
+`startLSP` asks for one-time consent via `LSPAllowAeonUV`; an explicit path bypasses
+the installer. The Aeon Run bundle reuses the managed executable if `TM_AEON`
+is unset. See [AEON-SETUP.md](AEON-SETUP.md).
 
 ### Unversioned diagnostics and synchronization
 
@@ -74,10 +84,17 @@ prints `AEON SERVER:` only under the opt-in `LSPAeonSynthesisTest` flag.
 
 Program execution is now implemented entirely in
 `Applications/TextMate/support/Bundles/Aeon.tmbundle`: a `.ae`/`source.aeon`
-grammar, scoped ⌘R command, and Ruby adapter using `TM_AEON` (fallback `aeon`)
+grammar, scoped ⌘R command, and Ruby adapter using `TM_AEON` (fallback managed
+uv installation, then `aeon` on PATH)
 with the shared TextMate Executor. No native Run adapter remains.
 `RunAeonBundleTest` / `LSPAeonBundleTest` is test-only, and `Prototype/run.ae`
 is its fixture. See [AEON-RUN.md](AEON-RUN.md) for details.
+
+Formatting is also bundle-owned: the scoped ⌥⇧F command calls `aeon --format`
+on a temporary copy of the buffer, using the same executable lookup as Run.
+It has no native Aeon formatter branch. The generic LSP formatting API remains
+internal; the bottom Format button and global Text menu entry were removed.
+See [FORMATTING.md](FORMATTING.md).
 
 - The menu's `smt`, `tdsyn_enumerative`, `tactics` allowlist.
 - The same three-backend allowlist in the executor.

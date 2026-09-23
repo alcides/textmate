@@ -51,6 +51,7 @@ static NSString* const kFoldingsColumnIdentifier  = @"foldings";
 @property (nonatomic) OakLSPClient* lspClient;
 @property (nonatomic) NSString* lspPath;
 @property (nonatomic) BOOL lspEnabled;
+@property (nonatomic) BOOL aeonSetupPromptVisible;
 @property (nonatomic) BOOL symbolBusy;
 @property (nonatomic) NSUInteger symbolSerial;
 - (void)updateStyle;
@@ -418,7 +419,6 @@ static NSString* const kFoldingsColumnIdentifier  = @"foldings";
 			[view.lspPanel showState:@"Stopped · Start clangd to check this file" diagnostics:@[] running:NO];
 		}
 	};
-	self.lspPanel.formatDocument = ^{ [weakSelf formatDocument:nil]; };
 	self.lspPanel.navigate = ^(NSDictionary* diagnostic) { [weakSelf revealLSPDiagnostic:diagnostic]; };
 	__block NSInteger actionVersion = 0;
 	__block __weak OakLSPClient* actionClient = nil;
@@ -463,6 +463,26 @@ static NSString* const kFoldingsColumnIdentifier  = @"foldings";
 }
 - (void)startLSP
 {
+	if([self.lspPath.pathExtension.lowercaseString isEqual:@"ae"] && ![NSUserDefaults.standardUserDefaults stringForKey:@"LSPAeonPath"].length && ![NSUserDefaults.standardUserDefaults boolForKey:@"LSPAllowAeonUV"]) {
+		if(self.aeonSetupPromptVisible) return;
+		self.lspEnabled = NO;
+		NSString* uv = OakLSPFindUV();
+		if(!uv) { [self.lspPanel showState:@"uv not found · Install uv or set LSPAeonPath" diagnostics:@[] running:NO]; return; }
+		self.aeonSetupPromptVisible = YES;
+		NSString* path = self.lspPath;
+		NSAlert* alert = [NSAlert new]; alert.messageText = @"Set up Aeon with uv?";
+		alert.informativeText = [NSString stringWithFormat:@"TextMate will use %@ to download the latest aeonlang package and its dependencies into a private TextMate tools directory. uv may also download Python. Setup checks for updates once per app launch when you start Aeon. Your global Python environment is not changed.", uv];
+		[alert addButtonWithTitle:@"Install and Start"]; [alert addButtonWithTitle:@"Cancel"];
+		__weak OakDocumentView* weakSelf = self;
+		[alert beginSheetModalForWindow:self.window completionHandler:^(NSModalResponse response) {
+			OakDocumentView* view = weakSelf;
+			view.aeonSetupPromptVisible = NO;
+			if(response != NSAlertFirstButtonReturn || !view || ![view.lspPath isEqual:path]) return;
+			[NSUserDefaults.standardUserDefaults setBool:YES forKey:@"LSPAllowAeonUV"];
+			[view startLSP];
+		}];
+		return;
+	}
 	++self.symbolSerial; self.symbolBusy = NO;
 	self.lspPanel.formattingEnabled = NO; self.lspPanel.formattingBusy = NO;
 	self.textView.lspDiagnostics = nil;

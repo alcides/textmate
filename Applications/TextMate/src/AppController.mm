@@ -352,7 +352,6 @@ BOOL HasDocumentWindow (NSArray* windows)
 				{ @"Shift Right",                          @selector(shiftRight:),                 @"]" },
 				{ @"Indent Line / Selection",              @selector(indent:)                           },
 				{ @"Rename Symbol…",                       @selector(renameSymbol:), @"R", .modifierFlags = NSEventModifierFlagOption|NSEventModifierFlagShift|NSEventModifierFlagCommand },
-				{ @"Format Document",                      @selector(formatDocument:), .modifierFlags = NSEventModifierFlagOption|NSEventModifierFlagShift, .key = 'F' },
 				{ /* -------- */ },
 				{ @"Reformat Text",                        @selector(reformatText:)                     },
 				{ @"Reformat Text and Justify",            @selector(reformatTextAndJustify:)           },
